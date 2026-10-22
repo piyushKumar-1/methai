@@ -19,6 +19,9 @@ export interface RealtimeVoiceModel {
     screen: string;
     tools: ToolSpec[];
     onToolCall: (name: string, input: unknown) => Promise<ToolCallResult>;
+    /** Report listening / thinking / speaking so the UI can follow along. */
+    setState?: (state: AssistantState) => void;
+    onTranscript?: (text: string) => void;
     signal: AbortSignal;
   }): Promise<void>;
 }
@@ -63,6 +66,8 @@ export class VoiceAssistant {
   }
 
   private set(patch: Partial<AssistantStatus>) {
+    // Skip no-op updates: realtime models report state per audio chunk, and every notify re-renders subscribers.
+    if ((Object.keys(patch) as (keyof AssistantStatus)[]).every(k => this.status[k] === patch[k])) return;
     this.status = { ...this.status, ...patch };
     for (const l of [...this.listeners]) l(this.status);
   }
@@ -99,6 +104,8 @@ export class VoiceAssistant {
             this.set({ state: 'thinking' });
             return this.controller.executeToolCall(name, input);
           },
+          setState: state => this.set({ state }),
+          onTranscript: transcript => this.set({ transcript }),
           signal,
         });
         return;

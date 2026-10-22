@@ -43,11 +43,14 @@
     "@types/jest": "^30.0.0",
     "@types/react": "^19.3.0",
     "@types/react-test-renderer": "^19.3.0",
+    "@types/ws": "^8.18.2",
     "expo-speech": "^58.0.3",
     "jest": "^30.5.2",
     "react": "^19.3.1",
     "react-native": "^0.88.0",
+    "react-native-audio-api": "^0.13.6",
     "react-test-renderer": "^19.3.1",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "ws": "^8.22.0"
   }
 }

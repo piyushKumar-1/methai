@@ -155,8 +155,40 @@ Two ways to plug in voice:
   detection on silence. Cloud STT/TTS fit the same interface.
 - **Speech-to-speech models** (realtime voice APIs): `{ realtime }`. A `RealtimeVoiceModel`
   owns the mic and speaker. It gets the greeting, the screen and the four tools, and calls
-  `onToolCall(name, input)` for each action. No adapter ships yet: realtime APIs need a WebRTC
-  or WebSocket audio transport that depends on the provider.
+  `onToolCall(name, input)` for each action. `openAIRealtimeModel()` implements the OpenAI Realtime
+  WebSocket protocol, which LiteLLM proxies also serve at `/v1/realtime`. It handles the greeting,
+  server-side voice activity detection, interrupting the model mid-answer (barge-in), tool calls,
+  and a short follow-up window after each answer so the user can reply to a confirmation question.
+  There's a mic/speaker adapter in [`example/pcm-audio.ts`](example/pcm-audio.ts)
+  (`react-native-audio-api`).
+
+### Using a LiteLLM gateway voice model
+
+```ts
+import { openAIRealtimeModel } from 'react-native-screen-context';
+import { devicePcmAudio } from './pcm-audio';
+
+const realtime = openAIRealtimeModel({
+  // Your relay (example/realtime-relay.ts) keeps the gateway key on the server.
+  connect: async () => ({ url: 'wss://your-backend.example.com/realtime' }),
+  audio: devicePcmAudio(),
+  protocol: 'ga',                      // or 'beta' for older realtime-preview style models
+});
+
+<ScreenContextProvider assistant={{ greeting: 'How can I help?', realtime }}>
+```
+
+Check what your gateway and model support first (the key is read from the environment or from
+`~/.config/grid/key` and never printed):
+
+```sh
+node scripts/probe-gateway.mjs xor-latest-custom
+```
+
+It reports whether the model is listed, whether `/v1/realtime` accepts it in the GA or beta shape,
+whether tool calls and audio come back, and whether `/v1/realtime/client_secrets` can mint
+short-lived tokens. If it can, `connect` can fetch a token from your backend and connect to the
+gateway directly with `headers: { Authorization: 'Bearer <token>' }`, with no relay in between.
 
 The agent's own button is wrapped in `AIIgnore`, so the model never sees or presses it.
 
@@ -176,6 +208,18 @@ controller.setActive(true)             // drive it yourself
 
 It draws above your root view. Native modals (RN `Modal`, native-stack modals) open in their own
 window, so the glow appears underneath them.
+
+## Overhead
+
+- **Idle: nothing.** No polling, timers or tree walks, and no re-renders. The provider's context
+  values never change, so wrapping the app doesn't re-render it. The glow is unmounted when idle.
+- **Reading the screen** happens only when the assistant is triggered and once after each action:
+  one synchronous walk of the tree. About 9 ms for 19k components and 2k controls on a laptop
+  (expect 3–5× that on a mid-range phone).
+- **While running:** only the glow, the assistant button and components that call `useAssistant()`
+  re-render, and only when the state changes (not per audio chunk). The glow animates on the native
+  thread (`useNativeDriver`), so it doesn't cost JS frames.
+- **No runtime dependencies.** Voice and audio adapters are opt-in examples.
 
 ## Caveats
 
