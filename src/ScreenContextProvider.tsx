@@ -21,7 +21,11 @@ export interface ExecuteOptions {
 
 export type ScreenContextEvent =
   | { type: 'active'; active: boolean }
-  | { type: 'action'; action: ScreenAction; result: ActionResult };
+  | { type: 'action'; action: ScreenAction; result: ActionResult }
+  /** Voice activity for visuals: which side is talking and how loud (0–1). */
+  | { type: 'voice'; phase: VoicePhase; level?: number };
+
+export type VoicePhase = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 const nextFrame = () => new Promise<void>(resolve => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => resolve()) : setTimeout(resolve, 16)));
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -52,6 +56,11 @@ export class ScreenContextController {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  /** Reports the voice phase and/or loudness (0–1); drives the voice-reactive glow. */
+  reportVoice(phase: VoicePhase, level?: number): void {
+    this.emit({ type: 'voice', phase, level });
   }
 
   private emit(event: ScreenContextEvent) {

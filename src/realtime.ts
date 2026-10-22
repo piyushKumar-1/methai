@@ -1,4 +1,5 @@
 import type { RealtimeVoiceModel } from './assistant';
+import { pcm16Base64ToFloat } from './pcm';
 
 /** Streaming mic + speaker at 24 kHz mono PCM16 (base64), e.g. example/pcm-audio.ts. */
 export interface PcmAudioIO {
@@ -43,11 +44,20 @@ type FunctionCall = { call_id: string; name: string; arguments: string };
 
 const END_TOOL = 'end_conversation';
 
+/** Loudness of a PCM16 chunk mapped to 0–1 (speech RMS sits around 0.02–0.3). */
+function levelOf(chunk: string): number {
+  const samples = pcm16Base64ToFloat(chunk);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 4) sum += samples[i] * samples[i];
+  const rms = Math.sqrt(sum / Math.max(1, samples.length / 4));
+  return Math.min(1, Math.sqrt(rms) * 1.6);
+}
+
 /** Speech-to-speech over the OpenAI Realtime WebSocket protocol (LiteLLM's /v1/realtime speaks it too). */
 export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceModel {
   const protocol = opts.protocol ?? 'ga';
   return {
-    async run({ greeting, screen, instructions: systemPrompt, tools, onToolCall, setState, onTranscript, conversation, isStopPhrase, onInterrupt, signal }) {
+    async run({ greeting, screen, instructions: systemPrompt, tools, onToolCall, setState, onTranscript, onLevel, conversation, isStopPhrase, onInterrupt, signal }) {
       const conn = await opts.connect();
       const WS = opts.WebSocketImpl ?? (globalThis as any).WebSocket;
       const ws = new WS(conn.url, conn.protocols ?? [], conn.headers ? { headers: conn.headers } : undefined);
@@ -123,7 +133,10 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
           setState?.('listening');
           if (!capturing) {
             capturing = true;
-            await audio.startCapture(chunk => send({ type: 'input_audio_buffer.append', audio: chunk }));
+            await audio.startCapture(chunk => {
+              send({ type: 'input_audio_buffer.append', audio: chunk });
+              if (onLevel) onLevel(levelOf(chunk));
+            });
           }
           awaitingSpeech = true;
           clearTimeout(noSpeechTimer);
@@ -182,7 +195,10 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
           switch (event.type) {
             case 'response.output_audio.delta':
             case 'response.audio.delta':
-              if (event.delta) audio.play(event.delta);
+              if (event.delta) {
+                audio.play(event.delta);
+                if (onLevel) onLevel(levelOf(event.delta));
+              }
               if (phase === 'conversation' && !busy) setState?.('speaking');
               break;
             case 'input_audio_buffer.speech_started':

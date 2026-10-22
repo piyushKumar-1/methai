@@ -1,21 +1,227 @@
 import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, Easing, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { AIIgnore } from './annotations';
-import type { ScreenContextController } from './ScreenContextProvider';
+import type { ScreenContextController, VoicePhase } from './ScreenContextProvider';
 
 export interface AgentGlowProps {
   controller: ScreenContextController;
-  /** Gradient colors, cycled around the border. */
+  /**
+   * 'aura' (default): fluid colour blobs along the bottom that swell with the voice and climb the
+   * sides as it gets louder. 'edge': a gradient flowing around the whole border.
+   */
+  variant?: 'aura' | 'edge';
+  /** Gradient colours. */
   colors?: string[];
-  /** Width of the bright edge line; the soft glow extends ~8x further inward. Default 3. */
+  /** 'edge' only: width of the bright edge line. Default 3. */
   thickness?: number;
   /** Match the device's screen corners. Default 44. */
   cornerRadius?: number;
-  /** Time for the colors to travel once around the screen. Default 4000ms. */
+  /** Speed of the flow: time for one full cycle. Default 4000ms (edge) / 7000ms (aura). */
   durationMs?: number;
 }
 
 const DEFAULT_COLORS = ['#7C5CFF', '#3D8BFF', '#22D3EE', '#FF5CA8', '#FF9F43'];
+
+/**
+ * Touch-transparent overlay shown while an agent session runs. Rendered by <ScreenContextProvider>;
+ * unmounted when idle. Everything animates on the native thread: voice levels update an
+ * Animated.Value, never React state, so the app never re-renders because of it.
+ */
+export function AgentGlow({ variant = 'aura', ...props }: AgentGlowProps) {
+  const { mounted, fade, reduceMotion } = useGlowVisibility(props.controller);
+  if (!mounted) return null;
+  return (
+    <AIIgnore>
+      <Animated.View style={[StyleSheet.absoluteFill, styles.root, { borderRadius: props.cornerRadius ?? 44, opacity: fade }]}>
+        {variant === 'edge' ? <EdgeGlow {...props} reduceMotion={reduceMotion} /> : <AuraGlow {...props} reduceMotion={reduceMotion} />}
+      </Animated.View>
+    </AIIgnore>
+  );
+}
+
+function useGlowVisibility(controller: ScreenContextController) {
+  const [active, setActive] = useState(controller.active);
+  const [mounted, setMounted] = useState(controller.active);
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const fade = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => controller.subscribe(e => e.type === 'active' && setActive(e.active)), [controller]);
+
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled?.().then(setReduceMotion, () => {});
+    const sub = AccessibilityInfo.addEventListener?.('reduceMotionChanged', setReduceMotion);
+    return () => sub?.remove();
+  }, []);
+
+  useEffect(() => {
+    if (active) setMounted(true);
+    const anim = Animated.timing(fade, { toValue: active ? 1 : 0, duration: active ? 350 : 600, useNativeDriver: true });
+    anim.start(({ finished }) => finished && !active && setMounted(false));
+    return () => anim.stop();
+  }, [active, fade]);
+
+  return { mounted, fade, reduceMotion };
+}
+
+/** A looping 0→1 value (native driver). */
+function useLoop(durationMs: number, enabled: boolean) {
+  const value = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!enabled) return;
+    value.setValue(0);
+    const loop = Animated.loop(Animated.timing(value, { toValue: 1, duration: durationMs, easing: Easing.linear, useNativeDriver: true }));
+    loop.start();
+    return () => loop.stop();
+  }, [durationMs, enabled, value]);
+  return value;
+}
+
+function rgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.replace(/./g, c => c + c) : h.slice(0, 6), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+type InnerProps = Omit<AgentGlowProps, 'variant'> & { reduceMotion: boolean };
+
+// ─── Aura ────────────────────────────────────────────────────────────────────────────────────
+
+const TICK_MS = 80;
+
+/**
+ * Voice level, smoothed with a spring. Real levels come from the mic / model audio; when the
+ * engine reports none (e.g. on-device text-to-speech), a speech-like level is synthesised from
+ * the phase so the aura still "talks".
+ */
+function useVoiceLevel(controller: ScreenContextController) {
+  const level = useRef(new Animated.Value(0.15)).current;
+  useEffect(() => {
+    let phase: VoicePhase = 'thinking';
+    let lastReal = 0;
+    let real = 0;
+    let boost = 0;
+    let current = 0.15;
+    const springTo = (target: number) => {
+      if (Math.abs(target - current) < 0.01) return;
+      current = target;
+      Animated.spring(level, { toValue: target, stiffness: 140, damping: 13, mass: 0.6, useNativeDriver: true }).start();
+    };
+    const unsubscribe = controller.subscribe(e => {
+      if (e.type === 'voice') {
+        phase = e.phase;
+        if (e.level !== undefined) {
+          real = e.level;
+          lastReal = Date.now();
+        }
+      } else if (e.type === 'action') {
+        boost = 0.35; // flash on every tap/keystroke the agent makes
+      }
+    });
+    const timer = setInterval(() => {
+      const t = Date.now() / 1000;
+      const fresh = Date.now() - lastReal < 300;
+      let target: number;
+      if (fresh && (phase === 'listening' || phase === 'speaking')) {
+        target = 0.14 + real * 0.86;
+      } else if (phase === 'speaking') {
+        const wobble = (Math.sin(t * 7.3) + Math.sin(t * 11.7 + 1) + Math.sin(t * 3.1 + 2)) / 6 + 0.5;
+        target = 0.32 + wobble * 0.45 + Math.random() * 0.08;
+      } else if (phase === 'listening') {
+        target = 0.13 + Math.sin(t * 2.2) * 0.03;
+      } else {
+        target = 0.22 + Math.sin(t * 4.5) * 0.07; // thinking: steady pulse
+      }
+      springTo(Math.min(1, target + boost));
+      boost *= 0.6;
+    }, TICK_MS);
+    return () => {
+      clearInterval(timer);
+      unsubscribe();
+    };
+  }, [controller, level]);
+  return level;
+}
+
+/** Eight-point sine table for a looping horizontal drift. */
+function drift(loop: Animated.Value, amplitude: number, offset: number) {
+  const steps = 8;
+  const inputRange = Array.from({ length: steps + 1 }, (_, i) => i / steps);
+  const outputRange = inputRange.map(x => Math.sin(2 * Math.PI * x + offset) * amplitude);
+  return loop.interpolate({ inputRange, outputRange });
+}
+
+function AuraGlow({ controller, colors = DEFAULT_COLORS, durationMs = 7000, reduceMotion }: InnerProps) {
+  const { width: W, height: H } = useWindowDimensions();
+  const level = useVoiceLevel(controller);
+  const loop = useLoop(durationMs, !reduceMotion);
+  const c = (i: number) => colors[i % colors.length];
+
+  // Blobs: wide soft ellipses half below the bottom edge, drifting sideways at different phases.
+  const blobs = [0.08, 0.36, 0.64, 0.92].map((x, i) => {
+    const bw = W * 0.95;
+    const bh = H * 0.3;
+    return (
+      <Animated.View
+        key={i}
+        style={{
+          position: 'absolute',
+          width: bw,
+          height: bh,
+          left: W * x - bw / 2,
+          top: H - bh * 0.5,
+          opacity: 0.85,
+          backgroundImage: `radial-gradient(closest-side, ${rgba(c(i), 0.85)} 0%, ${rgba(c(i), 0.35)} 45%, ${rgba(c(i), 0)} 100%)`,
+          transformOrigin: 'bottom',
+          transform: [
+            { translateX: reduceMotion ? 0 : drift(loop, W * 0.12, i * 1.7) },
+            // At rest a thin band at the bottom edge; loud speech lifts it to about a quarter of the screen.
+            { scaleY: Animated.add(0.28 + (i % 2) * 0.06, Animated.multiply(level, 0.95 + (i % 3) * 0.15)) },
+            { scaleX: Animated.add(0.85, Animated.multiply(level, 0.3)) },
+          ],
+        }}
+      />
+    );
+  });
+
+  // Sides: glows anchored in the bottom corners that climb the edges as the level rises.
+  const side = (left: boolean, color: string, widthFactor: number, alpha: number, reach: number) => (
+    <Animated.View
+      style={{
+        position: 'absolute',
+        bottom: 0,
+        [left ? 'left' : 'right']: 0,
+        width: W * widthFactor,
+        height: H,
+        backgroundImage: `radial-gradient(farthest-side at ${left ? '0%' : '100%'} 100%, ${rgba(color, alpha)} 0%, ${rgba(color, alpha * 0.45)} 40%, ${rgba(color, 0)} 100%)`,
+        transformOrigin: 'bottom',
+        transform: [{ scaleY: Animated.add(0.1, Animated.multiply(level, reach)) }],
+      }}
+    />
+  );
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      {side(true, c(0), 0.28, 0.45, 0.9)}
+      {side(false, c(3), 0.28, 0.45, 0.9)}
+      {side(true, c(2), 0.05, 0.9, 1)}
+      {side(false, c(1), 0.05, 0.9, 1)}
+      {blobs}
+      <Animated.View
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 3,
+          backgroundImage: `linear-gradient(90deg, ${[...colors, colors[0]].join(', ')})`,
+          opacity: Animated.add(0.35, Animated.multiply(level, 0.65)),
+        }}
+      />
+    </View>
+  );
+}
+
+// ─── Edge ────────────────────────────────────────────────────────────────────────────────────
 
 // Bright line + two progressively wider, fainter layers fake an inward falloff without a blur filter.
 const LAYERS = [
@@ -27,94 +233,58 @@ const LAYERS = [
 type Edge = 'top' | 'bottom' | 'left' | 'right';
 const EDGES: Edge[] = ['top', 'bottom', 'left', 'right'];
 
-/**
- * Full-screen, touch-transparent glow that flows around the screen edges while the agent is
- * active. Rendered by <ScreenContextProvider> by default; it unmounts its animation when idle.
- */
-export function AgentGlow({ controller, colors = DEFAULT_COLORS, thickness = 3, cornerRadius = 44, durationMs = 4000 }: AgentGlowProps) {
+function EdgeGlow({ controller, colors = DEFAULT_COLORS, thickness = 3, durationMs = 4000, reduceMotion }: InnerProps) {
   const { width: W, height: H } = useWindowDimensions();
-  const [active, setActive] = useState(controller.active);
-  const [mounted, setMounted] = useState(controller.active);
-  const [reduceMotion, setReduceMotion] = useState(false);
-  const fade = useRef(new Animated.Value(0)).current;
-  const spin = useRef(new Animated.Value(0)).current;
+  const spin = useLoop(durationMs, !reduceMotion);
   const pulse = useRef(new Animated.Value(0)).current;
 
   useEffect(
     () =>
       controller.subscribe(event => {
-        if (event.type === 'active') setActive(event.active);
-        if (event.type === 'action') {
-          Animated.sequence([
-            Animated.timing(pulse, { toValue: 1, duration: 120, useNativeDriver: true }),
-            Animated.timing(pulse, { toValue: 0, duration: 450, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-          ]).start();
-        }
+        if (event.type !== 'action') return;
+        Animated.sequence([
+          Animated.timing(pulse, { toValue: 1, duration: 120, useNativeDriver: true }),
+          Animated.timing(pulse, { toValue: 0, duration: 450, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        ]).start();
       }),
     [controller, pulse],
   );
-
-  useEffect(() => {
-    AccessibilityInfo.isReduceMotionEnabled?.().then(setReduceMotion, () => {});
-    const sub = AccessibilityInfo.addEventListener?.('reduceMotionChanged', setReduceMotion);
-    return () => sub?.remove();
-  }, []);
-
-  useEffect(() => {
-    if (active) setMounted(true);
-    const anim = Animated.timing(fade, { toValue: active ? 1 : 0, duration: active ? 350 : 500, useNativeDriver: true });
-    anim.start(({ finished }) => finished && !active && setMounted(false));
-    return () => anim.stop();
-  }, [active, fade]);
-
-  useEffect(() => {
-    if (!mounted || reduceMotion) return;
-    spin.setValue(0);
-    const loop = Animated.loop(Animated.timing(spin, { toValue: 1, duration: durationMs, easing: Easing.linear, useNativeDriver: true }));
-    loop.start();
-    return () => loop.stop();
-  }, [mounted, reduceMotion, durationMs, spin]);
-
-  if (!mounted) return null;
 
   // A square covering the screen at any rotation, centred on the screen. Each edge strip clips its
   // own copy at screen coordinates, so the four copies read as one gradient spinning behind a mask.
   const D = Math.ceil(Math.hypot(W, H));
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
-  const stops = [...colors, colors[0]].join(', ');
-  const gradient = `linear-gradient(90deg, ${stops})`;
+  const gradient = `linear-gradient(90deg, ${[...colors, colors[0]].join(', ')})`;
   const intensity = Animated.add(1, pulse);
 
   return (
-    <AIIgnore>
-      <Animated.View style={[StyleSheet.absoluteFill, styles.root, { borderRadius: cornerRadius, opacity: fade }]}>
-        {LAYERS.map((layer, i) => {
-          const t = thickness * layer.scale;
-          return (
-            <Animated.View key={i} style={[StyleSheet.absoluteFill, { opacity: Animated.multiply(intensity, layer.opacity) }]}>
-              {EDGES.map(edge => {
-                const frame = edgeFrame(edge, t, W, H);
-                return (
-                  <View key={edge} style={[styles.strip, frame]}>
-                    <Animated.View
-                      style={{
-                        position: 'absolute',
-                        width: D,
-                        height: D,
-                        left: (W - D) / 2 - frame.left,
-                        top: (H - D) / 2 - frame.top,
-                        backgroundImage: gradient,
-                        transform: [{ rotate }],
-                      }}
-                    />
-                  </View>
-                );
-              })}
-            </Animated.View>
-          );
-        })}
-      </Animated.View>
-    </AIIgnore>
+    <>
+      {LAYERS.map((layer, i) => {
+        const t = thickness * layer.scale;
+        return (
+          <Animated.View key={i} style={[StyleSheet.absoluteFill, { opacity: Animated.multiply(intensity, layer.opacity) }]}>
+            {EDGES.map(edge => {
+              const frame = edgeFrame(edge, t, W, H);
+              return (
+                <View key={edge} style={[styles.strip, frame]}>
+                  <Animated.View
+                    style={{
+                      position: 'absolute',
+                      width: D,
+                      height: D,
+                      left: (W - D) / 2 - frame.left,
+                      top: (H - D) / 2 - frame.top,
+                      backgroundImage: gradient,
+                      transform: [{ rotate }],
+                    }}
+                  />
+                </View>
+              );
+            })}
+          </Animated.View>
+        );
+      })}
+    </>
   );
 }
 

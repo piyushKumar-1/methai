@@ -51,6 +51,7 @@ export interface DeviceVoiceOptions {
 
 export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpeechMs = 1200, noSpeechTimeoutMs = 10000 }: DeviceVoiceOptions = {}): VoiceIO {
   let best: Promise<string | undefined> | undefined;
+  const speakingListeners = new Set<(level: number) => void>();
   const pickVoice = async () => {
     const chosen = typeof voice === 'function' ? voice() : voice;
     if (chosen) return chosen;
@@ -59,6 +60,11 @@ export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpe
   };
 
   return {
+    onSpeakingLevel(listener) {
+      speakingListeners.add(listener);
+      return () => speakingListeners.delete(listener);
+    },
+
     async speak(text, signal) {
       const say = speakable(text);
       if (signal.aborted || !say) return;
@@ -81,6 +87,8 @@ export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpe
           // Own playback session on iOS: full volume on the loudspeaker, not the quiet
           // voice-call route the recognizer's record session would give it.
           useApplicationAudioSession: false,
+          // A pulse per spoken word, so the glow moves with the speech.
+          onBoundary: () => speakingListeners.forEach(l => l(0.55 + Math.random() * 0.35)),
           onDone: done,
           onStopped: done,
           onError: done,
@@ -88,7 +96,7 @@ export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpe
       });
     },
 
-    async listen(signal, onPartial) {
+    async listen(signal, onPartial, onLevel) {
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!perm.granted) throw new Error('Microphone / speech recognition permission denied');
 
@@ -124,6 +132,8 @@ export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpe
             else stopAfter(endOfSpeechMs);
           }),
           ExpoSpeechRecognitionModule.addListener('end', finish),
+          // Mic loudness: -2 (silence) … 10 (loud).
+          ExpoSpeechRecognitionModule.addListener('volumechange', e => onLevel?.(Math.max(0, Math.min(1, (e.value + 2) / 12)) ** 1.3)),
           ExpoSpeechRecognitionModule.addListener('error', finish),
         );
         if (signal.aborted) return onAbort();
@@ -133,6 +143,7 @@ export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpe
           lang,
           interimResults: true,
           continuous: false,
+          volumeChangeEventOptions: { enabled: true, intervalMillis: 80 },
           iosCategory: { category: 'playAndRecord', categoryOptions: ['defaultToSpeaker', 'allowBluetooth'], mode: 'default' },
         });
         stopAfter(noSpeechTimeoutMs);

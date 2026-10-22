@@ -5,8 +5,13 @@ import type { ScreenContextController, ToolCallResult } from './ScreenContextPro
 /** Speech-to-text + text-to-speech, e.g. on-device recognizers (see example/voice-adapters.ts). */
 export interface VoiceIO {
   speak(text: string, signal: AbortSignal): Promise<void>;
-  /** Listens until the user stops talking and resolves with the final transcript ('' if nothing). */
-  listen(signal: AbortSignal, onPartial?: (text: string) => void): Promise<string>;
+  /**
+   * Listens until the user stops talking and resolves with the final transcript ('' if nothing).
+   * `onLevel` takes the mic loudness (0–1) for visuals, if the engine reports it.
+   */
+  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<string>;
+  /** Optional: loudness (0–1) of the speech being played, for visuals. */
+  onSpeakingLevel?: (listener: (level: number) => void) => () => void;
 }
 
 /**
@@ -24,6 +29,8 @@ export interface RealtimeVoiceModel {
     /** Report listening / thinking / speaking so the UI can follow along. */
     setState?: (state: AssistantState) => void;
     onTranscript?: (text: string) => void;
+    /** Mic or model loudness (0–1), for visuals. */
+    onLevel?: (level: number) => void;
     /** 'continuous': keep the session open after each answer until the user is done. */
     conversation: ConversationMode;
     /** True for utterances like "stop", "that's all", "thanks, bye". */
@@ -127,6 +134,9 @@ export class VoiceAssistant {
   private set(patch: Partial<AssistantStatus>) {
     // Skip no-op updates: realtime models report state per audio chunk, and every notify re-renders subscribers.
     if ((Object.keys(patch) as (keyof AssistantStatus)[]).every(k => this.status[k] === patch[k])) return;
+    if (patch.state && patch.state !== this.status.state) {
+      this.controller.reportVoice(patch.state === 'greeting' ? 'speaking' : patch.state);
+    }
     this.status = { ...this.status, ...patch };
     for (const l of [...this.listeners]) l(this.status);
   }
@@ -150,8 +160,14 @@ export class VoiceAssistant {
     this.abort?.abort();
   }
 
+  private voicePhase() {
+    const s = this.status.state;
+    return s === 'greeting' ? 'speaking' : s;
+  }
+
   /** Speaks, but can be cut short with interrupt() without ending the session. */
   private async speak(voice: VoiceIO, text: string, signal: AbortSignal): Promise<void> {
+    const offLevel = voice.onSpeakingLevel?.(level => this.controller.reportVoice('speaking', level));
     const speech = new AbortController();
     const onAbort = () => speech.abort();
     signal.addEventListener('abort', onAbort, { once: true });
@@ -159,6 +175,7 @@ export class VoiceAssistant {
     try {
       await voice.speak(text, speech.signal);
     } finally {
+      offLevel?.();
       this.interruptHandler = null;
       signal.removeEventListener('abort', onAbort);
     }
@@ -194,6 +211,7 @@ export class VoiceAssistant {
           },
           setState: state => this.set({ state }),
           onTranscript: transcript => this.set({ transcript }),
+          onLevel: level => this.controller.reportVoice(this.voicePhase(), level),
           conversation,
           isStopPhrase: stop,
           onInterrupt: handler => (this.interruptHandler = handler),
@@ -206,7 +224,13 @@ export class VoiceAssistant {
       const opts = { signal, maxSteps: config.maxSteps, app: config.app, systemPrompt: config.systemPrompt };
       const listen = async () => {
         this.set({ state: 'listening', transcript: '' });
-        const heard = (await voice.listen(signal, partial => this.set({ transcript: partial }))).trim();
+        const heard = (
+          await voice.listen(
+            signal,
+            partial => this.set({ transcript: partial }),
+            level => this.controller.reportVoice('listening', level),
+          )
+        ).trim();
         this.set({ transcript: heard });
         return heard;
       };

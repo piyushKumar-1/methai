@@ -241,22 +241,28 @@ gateway directly with `headers: { Authorization: 'Bearer <token>' }`, with no re
 
 The agent's own button is wrapped in `AIIgnore`, so the model never sees or presses it.
 
-## Edge glow
+## Voice-reactive glow
 
-While a session runs (the assistant or any `runAgent` call), a flowing gradient glows around the
-screen edges. It ignores touches, pulses on every action, and is unmounted when idle. It uses
-React Native's built-in `backgroundImage: linear-gradient(...)` and `Animated` (native driver),
-so it needs no native dependency. It requires the New Architecture (RN ≥ 0.76), and it doesn't spin
-when the OS "reduce motion" setting is on.
+While a session runs, an aura of colours flows along the bottom of the screen. It reacts to the
+voice: quiet means a thin glow at the bottom edge, and as the user (or the model) gets louder it swells
+and climbs up the sides. It flashes on every tap or keystroke the agent makes, and fades out when
+the session ends.
+
+- Levels come from `VoiceIO.listen(…, onLevel)` (mic loudness) and `VoiceIO.onSpeakingLevel`
+  (speech being played). Realtime models feed both automatically from the audio stream. Without
+  levels, the aura synthesises speech-like motion from the phase (listening, thinking, speaking).
+- It is all `Animated` on the native thread. Levels update an `Animated.Value`, never React state,
+  so the app doesn't re-render. Built-in gradients (`backgroundImage`) only; no native dependency.
+  Requires the New Architecture (RN ≥ 0.76).
+- It ignores touches, respects "reduce motion", and draws above your root view (native modals
+  open in their own window, so it appears underneath them).
 
 ```tsx
-<ScreenContextProvider glow={{ colors: ['#7C5CFF', '#22D3EE', '#FF5CA8'], thickness: 3, cornerRadius: 44, durationMs: 4000 }}>
-<ScreenContextProvider glow={false}>   // off
-controller.setActive(true)             // drive it yourself
+<ScreenContextProvider glow={{ variant: 'aura', colors: ['#7C5CFF', '#22D3EE', '#FF5CA8'], durationMs: 7000 }}>
+<ScreenContextProvider glow={{ variant: 'edge' }}>   // gradient flowing around the whole border
+<ScreenContextProvider glow={false}>                 // off
+controller.setActive(true); controller.reportVoice('listening', 0.6)   // drive it yourself
 ```
-
-It draws above your root view. Native modals (RN `Modal`, native-stack modals) open in their own
-window, so the glow appears underneath them.
 
 ## Overhead
 
