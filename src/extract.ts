@@ -1,0 +1,319 @@
+import { StyleSheet, Switch, TextInput } from 'react-native';
+import { AIAction, AIIgnore, AIScreenAction } from './annotations';
+import { displayNameOf, Fiber, FiberTag } from './fiber';
+import type { ActionType, CaptureOptions, ElementKind, ScreenElement, ScreenSnapshot } from './types';
+
+/** An extracted element plus the live fiber it came from, so actions can call its current props. */
+export interface ElementEntry {
+  element: ScreenElement;
+  fiber: Fiber;
+}
+
+export interface Extraction {
+  snapshot: ScreenSnapshot;
+  entries: Map<string, ElementEntry>;
+}
+
+interface Annotation {
+  name?: string;
+  description?: string;
+  used: boolean;
+}
+
+interface Draft {
+  kind: ElementKind;
+  fiber: Fiber;
+  props: any;
+  text: string[];
+  iconName?: string;
+  annotation?: Annotation;
+  /** `label` prop on a wrapping component (react-native-paper style). */
+  wrapperLabel?: string;
+  /** Static text rendered just before the control in the same container. */
+  precedingText?: string;
+}
+
+interface WalkState {
+  drafts: Draft[];
+  texts: { text: string; fiber: Fiber }[];
+  annotations: Annotation[];
+  route?: { name: string; depth: number };
+}
+
+const isFn = (v: unknown): v is Function => typeof v === 'function';
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+/** Subtrees that are mounted but not visible / not reachable by the user. */
+function isHidden(fiber: Fiber): boolean {
+  const p = fiber.memoizedProps;
+  if (fiber.tag === FiberTag.OffscreenComponent) return p?.mode === 'hidden';
+  if (fiber.tag === FiberTag.ContextProvider) {
+    // react-navigation's NavigationContext: unfocused screens stay mounted under a
+    // navigation object whose isFocused() is false.
+    const nav = p?.value;
+    if (nav && isFn(nav.isFocused) && isFn(nav.navigate)) {
+      try {
+        return nav.isFocused() === false;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+  if (!p || typeof p !== 'object') return false;
+  if (p.accessibilityElementsHidden === true) return true;
+  if (p.importantForAccessibility === 'no-hide-descendants') return true;
+  if (p['aria-hidden'] === true) return true;
+  if (fiber.tag === FiberTag.HostComponent && p.style) {
+    const style = StyleSheet.flatten(p.style);
+    if (style?.display === 'none') return true;
+  }
+  return false;
+}
+
+/** react-navigation's NavigationRouteContext value. */
+function routeName(fiber: Fiber): string | undefined {
+  if (fiber.tag !== FiberTag.ContextProvider) return undefined;
+  const v = fiber.memoizedProps?.value;
+  if (v && typeof v === 'object' && typeof v.key === 'string' && typeof v.name === 'string' && !isFn(v.navigate)) {
+    return v.name;
+  }
+  return undefined;
+}
+
+function interactiveKind(fiber: Fiber): ElementKind | null {
+  if (fiber.tag === FiberTag.HostComponent || fiber.tag === FiberTag.HostText) return null;
+  const t = fiber.elementType;
+  if (t === TextInput) return 'text_input';
+  const p = fiber.memoizedProps;
+  if (!p || typeof p !== 'object') return null;
+  if (t === Switch || (isFn(p.onValueChange) && typeof p.value === 'boolean')) return 'switch';
+  if (isFn(p.onPress) || isFn(p.onLongPress)) return 'button';
+  return null;
+}
+
+function isAncestor(maybeAncestor: Fiber, node: Fiber, maxDepth = 30): boolean {
+  let n: Fiber | null = node;
+  for (let i = 0; n && i < maxDepth; i++, n = n.return) {
+    if (n === maybeAncestor || n === (maybeAncestor as any).alternate) return true;
+  }
+  return false;
+}
+
+function wrapperLabel(fiber: Fiber): string | undefined {
+  let n = fiber.return;
+  for (let i = 0; n && i < 6; i++, n = n.return) {
+    const label = str(n.memoizedProps?.label);
+    if (label) return label;
+  }
+  return undefined;
+}
+
+function precedingText(fiber: Fiber, state: WalkState): string | undefined {
+  const last = state.texts[state.texts.length - 1];
+  if (!last) return undefined;
+  let scope: Fiber | null = fiber;
+  // A few levels up; composite wrappers (Animated, forwardRef…) count as levels too.
+  for (let i = 0; scope && i < 8; i++) scope = scope.return;
+  return scope && isAncestor(scope, last.fiber) ? last.text : undefined;
+}
+
+function walk(fiber: Fiber | null, state: WalkState, owner: Draft | null, onChain: boolean, depth: number) {
+  for (let node = fiber; node; node = node.sibling) {
+    visit(node, state, owner, onChain && !node.sibling && node === fiber, depth);
+  }
+}
+
+/**
+ * `owner` is the innermost interactive element being built; text found below it becomes its label.
+ * `onChain` is true while we're on its single-child wrapper chain (Button -> TouchableOpacity ->
+ * Animated.View …): a nested onPress there is the same control, not a new one.
+ */
+function visit(fiber: Fiber, state: WalkState, owner: Draft | null, onChain: boolean, depth: number) {
+  if (isHidden(fiber)) return;
+  const t = fiber.elementType;
+  if (t === AIIgnore) return;
+
+  const name = routeName(fiber);
+  if (name && (!state.route || depth >= state.route.depth)) state.route = { name, depth };
+
+  if (fiber.tag === FiberTag.HostText) {
+    const text = str(String(fiber.memoizedProps ?? ''));
+    if (text) {
+      if (owner) owner.text.push(text);
+      else state.texts.push({ text, fiber });
+    }
+    return;
+  }
+
+  if (t === AIScreenAction) {
+    const p = fiber.memoizedProps;
+    if (str(p?.name) && isFn(p?.onRun)) {
+      state.drafts.push({ kind: 'custom_action', fiber, props: p, text: [] });
+    }
+    return;
+  }
+
+  let pushedAnnotation = false;
+  if (t === AIAction) {
+    state.annotations.push({ name: str(fiber.memoizedProps?.name), description: str(fiber.memoizedProps?.description), used: false });
+    pushedAnnotation = true;
+  }
+
+  if (owner && !owner.iconName) {
+    const iconName = str(fiber.memoizedProps?.name);
+    if (iconName && /icon/i.test(displayNameOf(fiber) ?? '')) owner.iconName = iconName;
+  }
+
+  let current = owner;
+  let chain = onChain;
+  const kind = interactiveKind(fiber);
+  if (kind && !(owner && onChain)) {
+    const annotation = [...state.annotations].reverse().find(a => !a.used);
+    if (annotation) annotation.used = true;
+    const draft: Draft = { kind, fiber, props: fiber.memoizedProps, text: [], annotation };
+    if (kind === 'text_input' || kind === 'switch') {
+      draft.wrapperLabel = wrapperLabel(fiber);
+      draft.precedingText = precedingText(fiber, state);
+    }
+    state.drafts.push(draft);
+    current = draft;
+    chain = true;
+  }
+
+  walk(fiber.child, state, current, chain, depth + 1);
+  if (pushedAnnotation) state.annotations.pop();
+}
+
+function slug(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+}
+
+const KIND_PREFIX: Record<ElementKind, string> = {
+  button: 'btn',
+  text_input: 'input',
+  switch: 'switch',
+  custom_action: 'action',
+};
+
+function truncate(s: string | undefined, max: number): string | undefined {
+  if (s === undefined) return undefined;
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function toElement(d: Draft, maxLen: number): ScreenElement {
+  const p = d.props ?? {};
+  const a11yLabel = str(p.accessibilityLabel) ?? str(p['aria-label']);
+  const testID = str(p.testID);
+  const description =
+    d.annotation?.description ?? str(p.accessibilityHint) ?? str(p['aria-description']) ?? (d.kind === 'custom_action' ? str(p.description) : undefined);
+  const disabled =
+    p.disabled === true || p.accessibilityState?.disabled === true || p['aria-disabled'] === true || (d.kind === 'text_input' && p.editable === false);
+
+  const base = {
+    kind: d.kind,
+    description: truncate(description, maxLen),
+    disabled,
+    testID,
+  };
+
+  switch (d.kind) {
+    case 'text_input': {
+      const secure = p.secureTextEntry === true;
+      const raw = typeof p.value === 'string' ? p.value : typeof p.defaultValue === 'string' ? p.defaultValue : undefined;
+      const actions: ActionType[] = ['type'];
+      if (isFn(p.onSubmitEditing)) actions.push('submit');
+      return {
+        ...base,
+        id: '',
+        label: truncate(a11yLabel ?? d.wrapperLabel ?? str(p.placeholder) ?? d.precedingText ?? testID ?? 'text input', maxLen)!,
+        actions,
+        placeholder: str(p.placeholder),
+        value: secure ? undefined : truncate(raw, maxLen),
+        secure: secure || undefined,
+        multiline: p.multiline === true || undefined,
+        keyboardType: str(p.keyboardType),
+        maxLength: typeof p.maxLength === 'number' ? p.maxLength : undefined,
+        handlerName: str(p.onChangeText?.name),
+      };
+    }
+    case 'switch':
+      return {
+        ...base,
+        id: '',
+        label: truncate(a11yLabel ?? d.wrapperLabel ?? d.precedingText ?? testID ?? 'switch', maxLen)!,
+        actions: ['toggle'],
+        checked: typeof p.value === 'boolean' ? p.value : undefined,
+        handlerName: str(p.onValueChange?.name),
+      };
+    case 'custom_action':
+      return {
+        ...base,
+        id: '',
+        label: p.name,
+        actions: ['run'],
+        parameters: p.parameters,
+      };
+    case 'button': {
+      const actions: ActionType[] = [];
+      if (isFn(p.onPress)) actions.push('press');
+      if (isFn(p.onLongPress)) actions.push('long_press');
+      const label = a11yLabel ?? str(d.text.join(' ')) ?? str(p.title) ?? d.iconName ?? testID ?? str(p.onPress?.name) ?? 'unlabeled button';
+      return {
+        ...base,
+        id: '',
+        label: truncate(label, maxLen)!,
+        actions,
+        handlerName: str(p.onPress?.name) ?? str(p.onLongPress?.name),
+      };
+    }
+  }
+}
+
+/** Synchronously walks the current fiber tree from `root` and extracts the interactive surface. */
+export function extract(root: Fiber | null, opts: CaptureOptions = {}, getScreenName?: () => string | undefined): Extraction {
+  const maxLen = opts.maxTextLength ?? 200;
+  const maxTexts = opts.maxTexts ?? 80;
+  const state: WalkState = { drafts: [], texts: [], annotations: [] };
+  if (root) walk(root.child, state, null, false, 0);
+
+  const entries = new Map<string, ElementEntry>();
+  const used = new Map<string, number>();
+  const elements: ScreenElement[] = [];
+  for (const d of state.drafts) {
+    const el = toElement(d, maxLen);
+    if (el.disabled && opts.includeDisabled === false) continue;
+    const baseId = d.kind === 'custom_action'
+      ? `action_${slug(el.label)}`
+      : el.testID
+        ? slug(el.testID)
+        : `${KIND_PREFIX[d.kind]}_${slug(d.annotation?.name ?? el.label) || 'unlabeled'}`;
+    const n = (used.get(baseId) ?? 0) + 1;
+    used.set(baseId, n);
+    el.id = n === 1 ? baseId : `${baseId}_${n}`;
+    elements.push(el);
+    entries.set(el.id, { element: el, fiber: d.fiber });
+  }
+
+  const seen = new Set<string>();
+  const texts: string[] = [];
+  for (const { text } of state.texts) {
+    if (seen.has(text)) continue;
+    seen.add(text);
+    texts.push(truncate(text, maxLen)!);
+    if (texts.length >= maxTexts) break;
+  }
+
+  let screen: string | undefined;
+  try {
+    screen = getScreenName?.() ?? state.route?.name;
+  } catch {
+    screen = state.route?.name;
+  }
+
+  return { snapshot: { screen, capturedAt: Date.now(), elements, texts }, entries };
+}

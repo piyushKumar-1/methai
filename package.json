@@ -1,0 +1,53 @@
+{
+  "name": "react-native-screen-context",
+  "version": "0.1.0",
+  "description": "Extract the live, on-screen interactive surface (buttons, inputs, switches, text) of a React Native app as structured context and tool definitions for LLMs.",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index.ts",
+  "source": "src/index.ts",
+  "files": [
+    "lib",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "keywords": [
+    "react-native",
+    "llm",
+    "ai",
+    "agent",
+    "accessibility",
+    "screen-reader",
+    "context"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "react": ">=18",
+    "react-native": ">=0.72"
+  },
+  "jest": {
+    "preset": "@react-native/jest-preset",
+    "testMatch": [
+      "**/__tests__/**/*.test.ts?(x)"
+    ]
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^1.1.0",
+    "@react-native-voice/voice": "^3.2.4",
+    "@react-native/babel-preset": "^0.88.0",
+    "@react-native/jest-preset": "^0.88.0",
+    "@types/jest": "^30.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-test-renderer": "^19.3.0",
+    "expo-speech": "^58.0.3",
+    "jest": "^30.5.2",
+    "react": "^19.3.1",
+    "react-native": "^0.88.0",
+    "react-test-renderer": "^19.3.1",
+    "typescript": "^7.0.2"
+  }
+}

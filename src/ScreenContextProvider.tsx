@@ -1,0 +1,194 @@
+import { Component, createContext, useContext, useSyncExternalStore, type ReactNode } from 'react';
+import { AgentGlow, type AgentGlowProps } from './AgentGlow';
+import { VoiceAssistant, type AssistantConfig, type AssistantStatus } from './assistant';
+import { performAction } from './actions';
+import { extract, type Extraction } from './extract';
+import { currentRootOf, fiberOfInstance, type Fiber } from './fiber';
+import { formatSnapshot, toolCallToAction } from './llm';
+import { measureEntries } from './measure';
+import type { ActionResult, CaptureOptions, ScreenAction, ScreenSnapshot } from './types';
+
+export interface ToolCallResult {
+  isError: boolean;
+  /** Text to send back as the tool result: outcome plus the screen as it is after the action. */
+  content: string;
+}
+
+export interface ExecuteOptions {
+  /** Time to let React re-render (and navigation animate) after the handler settles. Default 300ms. */
+  settleMs?: number;
+}
+
+export type ScreenContextEvent =
+  | { type: 'active'; active: boolean }
+  | { type: 'action'; action: ScreenAction; result: ActionResult };
+
+const nextFrame = () => new Promise<void>(resolve => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => resolve()) : setTimeout(resolve, 16)));
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+export class ScreenContextController {
+  private listeners = new Set<(event: ScreenContextEvent) => void>();
+  private activeCount = 0;
+
+  constructor(
+    private readonly getRoot: () => Fiber | null,
+    private readonly getScreenName?: () => string | undefined,
+  ) {}
+
+  /** True while an agent session is running; drives the edge glow. */
+  get active(): boolean {
+    return this.activeCount > 0;
+  }
+
+  /** Marks an agent session as running or finished. Calls nest, so overlapping sessions are safe. */
+  setActive(active: boolean): void {
+    const was = this.active;
+    this.activeCount = Math.max(0, this.activeCount + (active ? 1 : -1));
+    if (was !== this.active) this.emit({ type: 'active', active: this.active });
+  }
+
+  subscribe(listener: (event: ScreenContextEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emit(event: ScreenContextEvent) {
+    for (const l of [...this.listeners]) l(event);
+  }
+
+  private extract(opts?: CaptureOptions): Extraction {
+    return extract(this.getRoot(), opts, this.getScreenName);
+  }
+
+  /** Synchronous capture from the fiber tree, without layout measurement. */
+  captureSync(opts?: CaptureOptions): ScreenSnapshot {
+    return this.extract(opts).snapshot;
+  }
+
+  /** Capture with layout measurement: drops off-screen/zero-size elements and adds bounds. */
+  async capture(opts: CaptureOptions = {}): Promise<ScreenSnapshot> {
+    const { snapshot, entries } = this.extract(opts);
+    if (opts.measure === false) return snapshot;
+    const hidden = await measureEntries(entries.values());
+    return { ...snapshot, elements: snapshot.elements.filter(el => !hidden.has(el.id)) };
+  }
+
+  /** Text rendering of the current screen for an LLM prompt. */
+  async describe(opts?: CaptureOptions): Promise<string> {
+    return formatSnapshot(await this.capture(opts));
+  }
+
+  /**
+   * Performs an action. The tree is re-read first, so the element is resolved against what is on
+   * screen *now* and the handler is the current one (not a stale closure from an old snapshot).
+   */
+  async execute(action: ScreenAction, opts: ExecuteOptions = {}): Promise<ActionResult> {
+    if (action.type === 'type' && action.submit) {
+      // Submit as a separate step after re-rendering, so onSubmitEditing sees the typed value.
+      const typed = await this.execute({ ...action, submit: false }, opts);
+      if (!typed.ok) return typed;
+      return this.execute({ type: 'submit', elementId: action.elementId }, opts);
+    }
+    const { entries } = this.extract();
+    const entry = entries.get(action.elementId);
+    if (!entry) {
+      const ids = [...entries.keys()];
+      return { ok: false, error: `No element "${action.elementId}" on screen. Available: ${ids.length ? ids.join(', ') : 'none'}.` };
+    }
+    await measureEntries([entry]); // gives press events a realistic location
+    const result = await performAction(entry, action);
+    this.emit({ type: 'action', action, result });
+    await nextFrame();
+    await sleep(opts.settleMs ?? 300);
+    return result;
+  }
+
+  /** Runs an LLM tool call end to end and returns a ready-to-send tool result. */
+  async executeToolCall(name: string, input: unknown, opts?: ExecuteOptions & CaptureOptions): Promise<ToolCallResult> {
+    const action = toolCallToAction(name, input);
+    if ('error' in action) return { isError: true, content: action.error };
+    const result = await this.execute(action, opts);
+    const screen = await this.describe(opts);
+    const head = result.ok ? `OK: ${action.type} on ${action.elementId}.${result.error ? ` Note: ${result.error}` : ''}` : `Failed: ${result.error}`;
+    return { isError: !result.ok, content: `${head}\n\nScreen now:\n${screen}` };
+  }
+}
+
+let defaultController: ScreenContextController | null = null;
+
+/** The controller of the most recently mounted provider, for use outside React components. */
+export function getScreenContext(): ScreenContextController {
+  if (!defaultController) throw new Error('ScreenContextProvider is not mounted.');
+  return defaultController;
+}
+
+const Ctx = createContext<ScreenContextController | null>(null);
+const AssistantCtx = createContext<VoiceAssistant | null>(null);
+
+export interface ScreenContextProviderProps {
+  children?: ReactNode;
+  /** Overrides the auto-detected react-navigation route name. */
+  getScreenName?: () => string | undefined;
+  /** Voice assistant setup. Read once, when the provider mounts. */
+  assistant?: AssistantConfig;
+  /** Edge glow shown while an agent session runs. `false` turns it off. */
+  glow?: false | Omit<AgentGlowProps, 'controller'>;
+}
+
+/**
+ * Mount once near the app root. It only needs to be mounted; extraction walks the whole React
+ * tree it belongs to (modals and navigation included), not just its children.
+ */
+export class ScreenContextProvider extends Component<ScreenContextProviderProps> {
+  readonly controller = new ScreenContextController(
+    () => currentRootOf(fiberOfInstance(this)),
+    () => this.props.getScreenName?.(),
+  );
+  readonly assistant = this.props.assistant ? new VoiceAssistant(this.controller, this.props.assistant) : null;
+
+  componentDidMount() {
+    defaultController = this.controller;
+  }
+
+  componentWillUnmount() {
+    this.assistant?.cancel();
+    if (defaultController === this.controller) defaultController = null;
+  }
+
+  render() {
+    const { glow } = this.props;
+    return (
+      <Ctx.Provider value={this.controller}>
+        <AssistantCtx.Provider value={this.assistant}>
+          {this.props.children}
+          {glow !== false && <AgentGlow controller={this.controller} {...glow} />}
+        </AssistantCtx.Provider>
+      </Ctx.Provider>
+    );
+  }
+}
+
+export function useScreenContext(): ScreenContextController {
+  const controller = useContext(Ctx);
+  if (!controller) throw new Error('useScreenContext must be used inside <ScreenContextProvider>.');
+  return controller;
+}
+
+export interface UseAssistant extends AssistantStatus {
+  /** Start, or stop if already running. Wire it to any button. */
+  toggle: () => void;
+  start: () => Promise<void>;
+  cancel: () => void;
+}
+
+export function useAssistant(): UseAssistant {
+  const assistant = useContext(AssistantCtx);
+  if (!assistant) throw new Error('useAssistant needs <ScreenContextProvider assistant={...}>.');
+  const status = useSyncExternalStore(
+    cb => assistant.subscribe(cb),
+    () => assistant.getStatus(),
+  );
+  return { ...status, toggle: () => assistant.toggle(), start: () => assistant.start(), cancel: () => assistant.cancel() };
+}

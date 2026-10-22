@@ -1,0 +1,134 @@
+import { runAgent, type AgentModel } from './agent';
+import { SCREEN_TOOLS, type ToolSpec } from './llm';
+import type { ScreenContextController, ToolCallResult } from './ScreenContextProvider';
+
+/** Speech-to-text + text-to-speech, e.g. on-device recognizers (see example/voice-adapters.ts). */
+export interface VoiceIO {
+  speak(text: string, signal: AbortSignal): Promise<void>;
+  /** Listens until the user stops talking and resolves with the final transcript ('' if nothing). */
+  listen(signal: AbortSignal, onPartial?: (text: string) => void): Promise<string>;
+}
+
+/**
+ * Speech-to-speech model session (realtime voice APIs). It owns the mic and speaker, greets the
+ * user, and calls `onToolCall` for screen actions; it resolves when the exchange is over.
+ */
+export interface RealtimeVoiceModel {
+  run(session: {
+    greeting: string;
+    screen: string;
+    tools: ToolSpec[];
+    onToolCall: (name: string, input: unknown) => Promise<ToolCallResult>;
+    signal: AbortSignal;
+  }): Promise<void>;
+}
+
+export type AssistantConfig = {
+  /** Spoken when the assistant is triggered. Default "How can I help?" */
+  greeting?: string;
+  /** Spoken when nothing was heard. Default: stays silent and goes idle. */
+  noInputReply?: string;
+  maxSteps?: number;
+} & ({ voice: VoiceIO; model: AgentModel } | { realtime: RealtimeVoiceModel });
+
+export type AssistantState = 'idle' | 'greeting' | 'listening' | 'thinking' | 'speaking';
+
+export interface AssistantStatus {
+  state: AssistantState;
+  /** Live transcript while listening, then the final one. */
+  transcript: string;
+  error?: string;
+}
+
+/** One-shot, voice-first assistant: greet → listen → act on the screen → speak the answer → idle. */
+export class VoiceAssistant {
+  private status: AssistantStatus = { state: 'idle', transcript: '' };
+  private abort: AbortController | null = null;
+  private listeners = new Set<(s: AssistantStatus) => void>();
+
+  constructor(
+    private readonly controller: ScreenContextController,
+    private readonly config: AssistantConfig,
+  ) {}
+
+  getStatus(): AssistantStatus {
+    return this.status;
+  }
+
+  subscribe(listener: (s: AssistantStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private set(patch: Partial<AssistantStatus>) {
+    this.status = { ...this.status, ...patch };
+    for (const l of [...this.listeners]) l(this.status);
+  }
+
+  /** Starts a session, or cancels the running one (so one button can do both). */
+  toggle(): void {
+    if (this.abort) this.cancel();
+    else void this.start();
+  }
+
+  cancel(): void {
+    this.abort?.abort();
+  }
+
+  async start(): Promise<void> {
+    if (this.abort) return;
+    const abort = new AbortController();
+    this.abort = abort;
+    const { signal } = abort;
+    const greeting = this.config.greeting ?? 'How can I help?';
+    this.controller.setActive(true);
+    this.set({ state: 'greeting', transcript: '', error: undefined });
+    try {
+      // Capture before the user speaks: this is the screen they are asking about.
+      const screen = await this.controller.describe();
+
+      if ('realtime' in this.config) {
+        this.set({ state: 'listening' });
+        await this.config.realtime.run({
+          greeting,
+          screen,
+          tools: SCREEN_TOOLS,
+          onToolCall: (name, input) => {
+            this.set({ state: 'thinking' });
+            return this.controller.executeToolCall(name, input);
+          },
+          signal,
+        });
+        return;
+      }
+
+      const { voice, model } = this.config;
+      await voice.speak(greeting, signal);
+      this.set({ state: 'listening' });
+      const request = (await voice.listen(signal, partial => this.set({ transcript: partial }))).trim();
+      this.set({ transcript: request });
+      if (!request) {
+        if (this.config.noInputReply) {
+          this.set({ state: 'speaking' });
+          await voice.speak(this.config.noInputReply, signal);
+        }
+        return;
+      }
+
+      this.set({ state: 'thinking' });
+      const answer = await runAgent(this.controller, model, request, { screen, signal, maxSteps: this.config.maxSteps });
+      if (answer) {
+        this.set({ state: 'speaking' });
+        await voice.speak(answer, signal);
+      }
+    } catch (e: any) {
+      if (!signal.aborted) this.set({ error: e?.message ?? String(e) });
+    } finally {
+      this.abort = null;
+      this.controller.setActive(false);
+      this.set({ state: 'idle' });
+    }
+  }
+}
