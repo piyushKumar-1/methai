@@ -49,7 +49,7 @@ export interface ScreenSnapshot {
   screen?: string;
   capturedAt: number;
   elements: ScreenElement[];
-  /** Visible non-interactive text (headings, messages, errors), in tree order, deduped. */
+  /** Visible non-interactive text (headings, messages, errors), in tree order. */
   texts: string[];
 }
 

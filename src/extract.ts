@@ -20,11 +20,33 @@ interface Annotation {
   used: boolean;
 }
 
+interface TextPiece {
+  text: string;
+  fiber: Fiber;
+  /** The native text view the string belongs to. */
+  host: Fiber | null;
+}
+
+/**
+ * The outermost native text view above a raw string. Nested <Text> renders as (virtual) text views
+ * inside the outer one, and the whole thing reads as one string.
+ */
+function textHostOf(fiber: Fiber): Fiber | null {
+  let outer: Fiber | null = null;
+  for (let n = fiber.return; n; n = n.return) {
+    if (n.tag !== FiberTag.HostComponent) continue;
+    const type = String(n.type);
+    if (/text/i.test(type) && !/input/i.test(type)) outer = n;
+    else break;
+  }
+  return outer;
+}
+
 interface Draft {
   kind: ElementKind;
   fiber: Fiber;
   props: any;
-  text: string[];
+  text: TextPiece[];
   iconName?: string;
   annotation?: Annotation;
   /** `label` prop on a wrapping component (react-native-paper style). */
@@ -35,7 +57,7 @@ interface Draft {
 
 interface WalkState {
   drafts: Draft[];
-  texts: { text: string; fiber: Fiber }[];
+  texts: TextPiece[];
   annotations: Annotation[];
   route?: { name: string; depth: number };
 }
@@ -111,11 +133,11 @@ function wrapperLabel(fiber: Fiber): string | undefined {
 
 function precedingText(fiber: Fiber, state: WalkState): string | undefined {
   const last = state.texts[state.texts.length - 1];
-  if (!last) return undefined;
+  if (!last || !str(last.text)) return undefined;
   let scope: Fiber | null = fiber;
   // A few levels up; composite wrappers (Animated, forwardRef…) count as levels too.
   for (let i = 0; scope && i < 8; i++) scope = scope.return;
-  return scope && isAncestor(scope, last.fiber) ? last.text : undefined;
+  return scope && isAncestor(scope, last.fiber) ? str(last.text) : undefined;
 }
 
 function walk(fiber: Fiber | null, state: WalkState, owner: Draft | null, onChain: boolean, depth: number) {
@@ -138,11 +160,14 @@ function visit(fiber: Fiber, state: WalkState, owner: Draft | null, onChain: boo
   if (name && (!state.route || depth >= state.route.depth)) state.route = { name, depth };
 
   if (fiber.tag === FiberTag.HostText) {
-    const text = str(String(fiber.memoizedProps ?? ''));
-    if (text) {
-      if (owner) owner.text.push(text);
-      else state.texts.push({ text, fiber });
-    }
+    // `<Text>₹{price}</Text>` renders two raw strings in one native text: join them, keeping
+    // their own spacing, instead of listing "₹" and "120" separately.
+    const raw = String(fiber.memoizedProps ?? '');
+    const host = textHostOf(fiber);
+    const list = owner ? owner.text : state.texts;
+    const last = list[list.length - 1];
+    if (last && host && last.host === host) last.text += raw;
+    else list.push({ text: raw, fiber, host });
     return;
   }
 
@@ -262,7 +287,7 @@ function toElement(d: Draft, maxLen: number): ScreenElement {
       const actions: ActionType[] = [];
       if (isFn(p.onPress)) actions.push('press');
       if (isFn(p.onLongPress)) actions.push('long_press');
-      const label = a11yLabel ?? str(d.text.join(' ')) ?? str(p.title) ?? d.iconName ?? testID ?? str(p.onPress?.name) ?? 'unlabeled button';
+      const label = a11yLabel ?? str(d.text.map(t => t.text.trim()).filter(Boolean).join(' ')) ?? str(p.title) ?? d.iconName ?? testID ?? str(p.onPress?.name) ?? 'unlabeled button';
       return {
         ...base,
         id: '',
@@ -299,11 +324,11 @@ export function extract(root: Fiber | null, opts: CaptureOptions = {}, getScreen
     entries.set(el.id, { element: el, fiber: d.fiber });
   }
 
-  const seen = new Set<string>();
+  // Keep repeats ("0" for each product's quantity carries meaning); drop only immediate duplicates.
   const texts: string[] = [];
-  for (const { text } of state.texts) {
-    if (seen.has(text)) continue;
-    seen.add(text);
+  for (const piece of state.texts) {
+    const text = str(piece.text.replace(/\s+/g, ' '));
+    if (!text || text === texts[texts.length - 1]) continue;
     texts.push(truncate(text, maxLen)!);
     if (texts.length >= maxTexts) break;
   }

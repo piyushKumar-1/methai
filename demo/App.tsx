@@ -54,7 +54,7 @@ export default function App() {
   }, [mode, chatModel, realtimeModel]);
 
   return (
-    <ScreenContextProvider assistant={assistant}>
+    <ScreenContextProvider assistant={assistant} getScreenName={() => tab}>
       <SafeAreaView style={styles.root}>
         <StatusBar style="dark" />
         <Header tab={tab} />

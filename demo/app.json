@@ -10,9 +10,13 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.piyushkumar.methaidemo",
       "infoPlist": {
-        "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": true, "NSAllowsLocalNetworking": true },
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
         "NSLocalNetworkUsageDescription": "Connects to the demo server on your computer."
-      }
+      },
+      "appleTeamId": "7884GR3R2K"
     },
     "android": {
       "package": "com.piyushkumar.methaidemo",
@@ -37,14 +41,21 @@
       ],
       [
         "expo-build-properties",
-        { "android": { "usesCleartextTraffic": true } }
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
       ],
       [
         "react-native-audio-api",
         {
           "iosBackgroundMode": false,
           "iosMicrophonePermission": "The assistant listens to your voice commands.",
-          "androidPermissions": ["android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS"],
+          "androidPermissions": [
+            "android.permission.RECORD_AUDIO",
+            "android.permission.MODIFY_AUDIO_SETTINGS"
+          ],
           "androidForegroundService": false
         }
       ]

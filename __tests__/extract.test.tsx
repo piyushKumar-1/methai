@@ -30,6 +30,7 @@ function Login() {
   return (
     <View>
       <Text>Welcome back</Text>
+      <Text>Total: ₹{120 + 60}, <Text>incl. tax</Text></Text>
       <TextInput placeholder="you@example.com" value={email} onChangeText={setEmail} keyboardType="email-address" />
       <TextInput placeholder="Password" secureTextEntry value="hunter2" onChangeText={() => {}} onSubmitEditing={() => log.push('submit')} />
       <View>
@@ -98,7 +99,7 @@ const execute = async (...args: Parameters<ScreenContextController['execute']>) 
 test('extracts the visible, focused interactive surface', () => {
   const snap = controller.captureSync();
   expect(snap.screen).toBe('Login');
-  expect(snap.texts).toEqual(['Welcome back', 'Remember me']);
+  expect(snap.texts).toEqual(['Welcome back', 'Total: ₹180, incl. tax', 'Remember me']);
   expect(snap.elements.map(e => [e.id, e.kind, e.label])).toEqual([
     ['input_you_example_com', 'text_input', 'you@example.com'],
     ['input_password', 'text_input', 'Password'],
@@ -156,6 +157,7 @@ test('formatSnapshot', () => {
 "Screen: Login
 Visible text:
 - Welcome back
+- Total: ₹180, incl. tax
 - Remember me
 Interactive elements (refer to them by the id in brackets):
 - [input_you_example_com] text input "you@example.com" value="" keyboard=email-address
