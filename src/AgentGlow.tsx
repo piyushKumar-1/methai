@@ -76,6 +76,14 @@ function useLoop(durationMs: number, enabled: boolean) {
   return value;
 }
 
+/**
+ * CSS gradient as a background. React Native ≤0.8x only reads it from `experimental_backgroundImage`
+ * (an unknown `backgroundImage` key is dropped silently); newer versions read `backgroundImage`.
+ */
+function background(image: string): Record<string, string> {
+  return { backgroundImage: image, experimental_backgroundImage: image };
+}
+
 function rgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '');
   const n = parseInt(h.length === 3 ? h.replace(/./g, c => c + c) : h.slice(0, 6), 16);
@@ -170,7 +178,7 @@ function AuraGlow({ controller, colors = DEFAULT_COLORS, durationMs = 7000, redu
           left: W * x - bw / 2,
           top: H - bh * 0.5,
           opacity: 0.85,
-          backgroundImage: `radial-gradient(closest-side, ${rgba(c(i), 0.85)} 0%, ${rgba(c(i), 0.35)} 45%, ${rgba(c(i), 0)} 100%)`,
+          ...background(`radial-gradient(closest-side, ${rgba(c(i), 0.85)} 0%, ${rgba(c(i), 0.35)} 45%, ${rgba(c(i), 0)} 100%)`),
           transformOrigin: 'bottom',
           transform: [
             { translateX: reduceMotion ? 0 : drift(loop, W * 0.12, i * 1.7) },
@@ -192,7 +200,7 @@ function AuraGlow({ controller, colors = DEFAULT_COLORS, durationMs = 7000, redu
         [left ? 'left' : 'right']: 0,
         width: W * widthFactor,
         height: H,
-        backgroundImage: `radial-gradient(farthest-side at ${left ? '0%' : '100%'} 100%, ${rgba(color, alpha)} 0%, ${rgba(color, alpha * 0.45)} 40%, ${rgba(color, 0)} 100%)`,
+        ...background(`radial-gradient(farthest-side at ${left ? '0%' : '100%'} 100%, ${rgba(color, alpha)} 0%, ${rgba(color, alpha * 0.45)} 40%, ${rgba(color, 0)} 100%)`),
         transformOrigin: 'bottom',
         transform: [{ scaleY: Animated.add(0.1, Animated.multiply(level, reach)) }],
       }}
@@ -213,7 +221,7 @@ function AuraGlow({ controller, colors = DEFAULT_COLORS, durationMs = 7000, redu
           right: 0,
           bottom: 0,
           height: 3,
-          backgroundImage: `linear-gradient(90deg, ${[...colors, colors[0]].join(', ')})`,
+          ...background(`linear-gradient(90deg, ${[...colors, colors[0]].join(', ')})`),
           opacity: Animated.add(0.35, Animated.multiply(level, 0.65)),
         }}
       />
@@ -274,7 +282,7 @@ function EdgeGlow({ controller, colors = DEFAULT_COLORS, thickness = 3, duration
                       height: D,
                       left: (W - D) / 2 - frame.left,
                       top: (H - D) / 2 - frame.top,
-                      backgroundImage: gradient,
+                      ...background(gradient),
                       transform: [{ rotate }],
                     }}
                   />

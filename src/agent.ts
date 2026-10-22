@@ -70,7 +70,8 @@ async function drive(
       // UI actions depend on each other, so they run in order.
       const results: ModelToolResult[] = [];
       for (const call of turn.toolCalls) {
-        signal.throwIfAborted();
+        // Not signal.throwIfAborted(): React Native's AbortSignal polyfill (abort-controller) lacks it.
+        if (signal.aborted) throw new Error('Aborted');
         const { isError, content } = await controller.executeToolCall(call.name, call.input);
         const result = { id: call.id, content, isError };
         opts.onToolCall?.(call, result);
