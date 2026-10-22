@@ -2,6 +2,14 @@ import type { ScreenAction, ScreenElement, ScreenSnapshot } from './types';
 
 const q = (s: string) => JSON.stringify(s);
 
+/** System prompt for a voice agent that drives the app through the screen tools. */
+export const AGENT_INSTRUCTIONS = `You are a voice assistant that operates a mobile app on the user's behalf by calling tools.
+You see the app's current screen as text: visible text plus interactive elements with ids in brackets.
+Tool results include the screen after the action; only use ids from the most recent screen.
+Act one step at a time. Never enter passwords, payment details or secrets the user did not say.
+Ask before irreversible actions (payments, deletions, sending messages) unless the user asked for exactly that.
+Your replies are spoken aloud: one or two short sentences of plain speech, no markdown, lists, emoji or ids.`;
+
 function describeElement(el: ScreenElement): string {
   const parts: string[] = [`[${el.id}]`];
   switch (el.kind) {
@@ -55,6 +63,52 @@ export interface ToolSpec {
   name: string;
   description: string;
   schema: JSONSchemaObject;
+}
+
+export interface AppScreenInfo {
+  name: string;
+  /** What the user does on this screen. */
+  description?: string;
+  /** How to get there, e.g. "Shop tab in the bottom bar". */
+  howToReach?: string;
+}
+
+export interface AppFlow {
+  name: string;
+  /** The steps, in order, e.g. "Shop tab → add items → enter coupon → Checkout". */
+  steps: string;
+}
+
+/** What the agent should know about the app before it looks at any screen. */
+export interface AppContext {
+  name?: string;
+  /** What the app is and who it is for. */
+  description?: string;
+  screens?: AppScreenInfo[];
+  /** Common tasks and how they are done. */
+  flows?: AppFlow[];
+  /** Extra rules, tone, domain terms, things to never do… */
+  instructions?: string;
+}
+
+/** Builds the system prompt: base agent rules plus the app description. */
+export function buildInstructions(app?: AppContext, base: string = AGENT_INSTRUCTIONS): string {
+  if (!app) return base;
+  const parts = [base, '', `About the app${app.name ? `: ${app.name}` : ''}`];
+  if (app.description) parts.push(app.description.trim());
+  if (app.screens?.length) {
+    parts.push('', 'Screens:');
+    for (const s of app.screens) {
+      parts.push(`- ${s.name}${s.description ? `: ${s.description}` : ''}${s.howToReach ? ` (reach it via ${s.howToReach})` : ''}`);
+    }
+  }
+  if (app.flows?.length) {
+    parts.push('', 'Common flows:');
+    for (const f of app.flows) parts.push(`- ${f.name}: ${f.steps}`);
+  }
+  if (app.instructions) parts.push('', app.instructions.trim());
+  parts.push('', 'The screen description in each message is the source of truth for what is visible right now; use the app notes above to plan how to get where the user wants.');
+  return parts.join('\n');
 }
 
 const elementId = { type: 'string', description: 'The id shown in brackets in the screen context, e.g. "btn_log_in".' };

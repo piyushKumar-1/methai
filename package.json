@@ -33,6 +33,13 @@
     "preset": "@react-native/jest-preset",
     "testMatch": [
       "**/__tests__/**/*.test.ts?(x)"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/demo/"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/demo/"
     ]
   },
   "devDependencies": {

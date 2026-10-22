@@ -27,8 +27,6 @@ export interface OpenAIRealtimeOptions {
   voice?: string;
   /** Event/session shape: 'ga' (current OpenAI Realtime) or 'beta' (older realtime-preview models). Default 'ga'. */
   protocol?: 'ga' | 'beta';
-  /** Extra instructions appended to the built-in ones. */
-  instructions?: string;
   /** End the session if the user says nothing for this long after the greeting. Default 8000ms. */
   noSpeechTimeoutMs?: number;
   /** After an answer, keep listening this long for a reply (e.g. to a confirmation question). Default 4000ms. */
@@ -39,20 +37,13 @@ export interface OpenAIRealtimeOptions {
   WebSocketImpl?: any;
 }
 
-const BASE_INSTRUCTIONS = `You are a voice assistant that operates a mobile app on the user's behalf by calling tools.
-You see the app's current screen as text: visible text plus interactive elements with ids in brackets.
-Tool results include the screen after the action; only use ids from the most recent screen.
-Act one step at a time. Never enter passwords, payment details or secrets the user did not say.
-Ask before irreversible actions (payments, deletions, sending messages) unless the user asked for exactly that.
-Speak briefly and naturally: one or two short sentences, never read out ids.`;
-
 type FunctionCall = { call_id: string; name: string; arguments: string };
 
 /** Speech-to-speech over the OpenAI Realtime WebSocket protocol (LiteLLM's /v1/realtime speaks it too). */
 export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceModel {
   const protocol = opts.protocol ?? 'ga';
   return {
-    async run({ greeting, screen, tools, onToolCall, setState, onTranscript, signal }) {
+    async run({ greeting, screen, instructions: systemPrompt, tools, onToolCall, setState, onTranscript, signal }) {
       const conn = await opts.connect();
       const WS = opts.WebSocketImpl ?? (globalThis as any).WebSocket;
       const ws = new WS(conn.url, conn.protocols ?? [], conn.headers ? { headers: conn.headers } : undefined);
@@ -88,7 +79,7 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
         signal.addEventListener('abort', onAbort, { once: true });
 
         const toolDefs = tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.schema }));
-        const instructions = `${BASE_INSTRUCTIONS}${opts.instructions ? `\n${opts.instructions}` : ''}\n\nCurrent screen:\n${screen}`;
+        const instructions = `${systemPrompt}\n\nCurrent screen:\n${screen}`;
         const vad = { type: 'server_vad', silence_duration_ms: opts.silenceDurationMs ?? 600 };
         const session =
           protocol === 'ga'

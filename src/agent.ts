@@ -1,3 +1,4 @@
+import { buildInstructions, type AppContext } from './llm';
 import type { ScreenContextController } from './ScreenContextProvider';
 
 export interface ModelToolCall {
@@ -23,8 +24,11 @@ export interface ModelTurn {
  * transport (normally your backend); the agent loop only exchanges tool calls and results.
  */
 export interface AgentModel {
-  start(request: string, screen: string, signal: AbortSignal): Promise<ModelTurn>;
+  /** `instructions` is the system prompt (agent rules + app context) for this session. */
+  start(request: string, screen: string, signal: AbortSignal, instructions: string): Promise<ModelTurn>;
   continue(results: ModelToolResult[], signal: AbortSignal): Promise<ModelTurn>;
+  /** The user's reply to the model's last answer, in the same conversation (e.g. "yes, check out"). */
+  followUp?(reply: string, screen: string, signal: AbortSignal): Promise<ModelTurn>;
 }
 
 export interface RunAgentOptions {
@@ -32,15 +36,35 @@ export interface RunAgentOptions {
   signal?: AbortSignal;
   /** Screen description captured when the request was made. Captured now if omitted. */
   screen?: string;
+  /** Describes the app (screens, flows) for the system prompt. */
+  app?: AppContext;
+  /** Replaces the built-in agent rules (the app context is still appended). */
+  systemPrompt?: string;
   onToolCall?: (call: ModelToolCall, result: ModelToolResult) => void;
 }
 
 /** Runs request → tool calls → actions → … until the model answers without tools. Returns its answer. */
-export async function runAgent(controller: ScreenContextController, model: AgentModel, request: string, opts: RunAgentOptions = {}): Promise<string> {
+export function runAgent(controller: ScreenContextController, model: AgentModel, request: string, opts: RunAgentOptions = {}): Promise<string> {
+  const instructions = buildInstructions(opts.app, opts.systemPrompt);
+  return drive(controller, model, opts, async (signal, screen) => model.start(request, screen, signal, instructions));
+}
+
+/** Continues the conversation of the last runAgent call with the user's reply. Needs `model.followUp`. */
+export function runAgentFollowUp(controller: ScreenContextController, model: AgentModel, reply: string, opts: RunAgentOptions = {}): Promise<string> {
+  if (!model.followUp) throw new Error('This model does not support follow-ups.');
+  return drive(controller, model, opts, (signal, screen) => model.followUp!(reply, screen, signal));
+}
+
+async function drive(
+  controller: ScreenContextController,
+  model: AgentModel,
+  opts: RunAgentOptions,
+  first: (signal: AbortSignal, screen: string) => Promise<ModelTurn>,
+): Promise<string> {
   const signal = opts.signal ?? new AbortController().signal;
   controller.setActive(true);
   try {
-    let turn = await model.start(request, opts.screen ?? (await controller.describe()), signal);
+    let turn = await first(signal, opts.screen ?? (await controller.describe()));
     for (let step = 0; step < (opts.maxSteps ?? 20); step++) {
       if (turn.toolCalls.length === 0) return turn.text ?? '';
       // UI actions depend on each other, so they run in order.

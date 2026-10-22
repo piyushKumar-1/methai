@@ -22,6 +22,9 @@ Interactive elements (refer to them by the id in brackets):
 - [action_refresh] action "refresh" args schema: {"type":"object"} — Reloads the account
 ```
 
+**Try it on a phone:** [`demo/`](demo/) is an Expo app with a login form, a shop and settings
+that you can drive by voice. See [demo/README.md](demo/README.md).
+
 ## Setup
 
 ```tsx
@@ -117,6 +120,10 @@ import { anthropicTools, openAITools } from 'react-native-screen-context';
 const { isError, content } = await screen.executeToolCall(toolUse.name, toolUse.input);
 ```
 
+For OpenAI-compatible gateways (LiteLLM, vLLM, …) there is a ready adapter:
+`openAIChatModel({ endpoint, model })`. It posts chat-completions bodies to your backend route,
+which adds the key and forwards them.
+
 `runAgent(controller, model, request)` is a provider-agnostic loop: request → tool calls →
 actions → … → final answer. You plug in a model through the small `AgentModel` interface
 (`start(request, screen)` / `continue(toolResults)`). [`example/model.ts`](example/model.ts)
@@ -146,6 +153,38 @@ import { AssistantButton, ScreenContextProvider, useAssistant } from 'react-nati
 // …or from any button of your own
 const { state, transcript, toggle } = useAssistant();   // state: idle | greeting | listening | thinking | speaking
 ```
+
+### Describing your app (system prompt)
+
+Tell the agent what the app is, which screens exist and how common tasks are done. It then knows
+where to go before it has seen the screen (e.g. "buy apples" while you're on Login → open the Shop
+tab first):
+
+```tsx
+<ScreenContextProvider
+  assistant={{
+    voice, model,
+    app: {
+      name: 'FreshCart',
+      description: 'Grocery delivery in 20 minutes. Prices are in rupees.',
+      screens: [
+        { name: 'Shop', description: 'Products, quantities, coupon, Checkout', howToReach: 'the Shop tab' },
+        { name: 'Orders', description: 'Past orders and tracking', howToReach: 'Profile → Orders' },
+      ],
+      flows: [{ name: 'Place an order', steps: 'Shop → add items → coupon (optional) → Checkout' }],
+      instructions: 'Never cancel an order without asking.',
+    },
+    // systemPrompt: '…',   // replaces the built-in agent rules; `app` is still appended
+  }}
+>
+```
+
+`buildInstructions(app)` returns the final system prompt if you call `runAgent` yourself or want to
+log it. It is the same for every request in a session, so it caches well.
+
+When an answer ends with a question ("Should I check out?"), the assistant listens again and
+continues the same conversation (`maxFollowUps`, default 3). Speech-to-speech models get a short
+follow-up window after every answer.
 
 Two ways to plug in voice:
 

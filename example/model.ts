@@ -4,20 +4,21 @@ import type { BetaMessage, BetaMessageParam, BetaToolResultBlockParam, BetaToolU
 import type { AgentModel, ModelTurn } from '../src';
 
 export interface BackendModelOptions {
-  /** POST endpoint that forwards { messages } to screenAgentTurn() and returns the message. */
+  /** POST endpoint that forwards { system, messages } to screenAgentTurn() and returns the message. */
   endpoint: string;
   headers?: Record<string, string>;
 }
 
 export function backendModel({ endpoint, headers }: BackendModelOptions): AgentModel {
   let messages: BetaMessageParam[] = [];
+  let system = '';
 
   async function send(signal: AbortSignal): Promise<ModelTurn> {
     for (;;) {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({ system, messages }),
         signal,
       });
       if (!res.ok) throw new Error(`Assistant backend returned ${res.status}`);
@@ -37,7 +38,8 @@ export function backendModel({ endpoint, headers }: BackendModelOptions): AgentM
   }
 
   return {
-    start(request, screen, signal) {
+    start(request, screen, signal, instructions) {
+      system = instructions;
       messages = [{ role: 'user', content: `${request}\n\nCurrent screen:\n${screen}` }];
       return send(signal);
     },

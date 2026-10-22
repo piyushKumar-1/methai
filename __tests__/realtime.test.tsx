@@ -87,7 +87,19 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   let r!: TestRenderer.ReactTestRenderer;
   await act(async () => {
     r = TestRenderer.create(
-      <ScreenContextProvider assistant={{ greeting: 'Hey, what do you need?', realtime }}>
+      <ScreenContextProvider
+        assistant={{
+          greeting: 'Hey, what do you need?',
+          realtime,
+          app: {
+            name: 'FreshCart',
+            description: 'Grocery delivery in 20 minutes.',
+            screens: [{ name: 'Shop', description: 'Products and the cart', howToReach: 'the Shop tab' }],
+            flows: [{ name: 'Order', steps: 'Shop → add items → Checkout' }],
+            instructions: 'Prices are in rupees.',
+          },
+        }}
+      >
         <Shop />
       </ScreenContextProvider>,
     );
@@ -108,6 +120,10 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   expect(update.session.audio.output.voice).toBe('alloy');
   expect(update.session.tools.map((t: any) => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'run_screen_action']);
   expect(update.session.instructions).toContain('[btn_place_order] button "Place order"');
+  expect(update.session.instructions).toContain('About the app: FreshCart\nGrocery delivery in 20 minutes.');
+  expect(update.session.instructions).toContain('- Shop: Products and the cart (reach it via the Shop tab)');
+  expect(update.session.instructions).toContain('- Order: Shop → add items → Checkout');
+  expect(update.session.instructions).toContain('Prices are in rupees.');
   expect(greet.response.instructions).toContain('Hey, what do you need?');
 
   // Greeting audio, then the mic opens.

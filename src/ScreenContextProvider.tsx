@@ -131,7 +131,7 @@ export interface ScreenContextProviderProps {
   children?: ReactNode;
   /** Overrides the auto-detected react-navigation route name. */
   getScreenName?: () => string | undefined;
-  /** Voice assistant setup. Read once, when the provider mounts. */
+  /** Voice assistant setup. Read at the start of each session, so it can change at runtime. */
   assistant?: AssistantConfig;
   /** Edge glow shown while an agent session runs. `false` turns it off. */
   glow?: false | Omit<AgentGlowProps, 'controller'>;
@@ -146,7 +146,7 @@ export class ScreenContextProvider extends Component<ScreenContextProviderProps>
     () => currentRootOf(fiberOfInstance(this)),
     () => this.props.getScreenName?.(),
   );
-  readonly assistant = this.props.assistant ? new VoiceAssistant(this.controller, this.props.assistant) : null;
+  readonly assistant = this.props.assistant ? new VoiceAssistant(this.controller, () => this.props.assistant!) : null;
 
   componentDidMount() {
     defaultController = this.controller;

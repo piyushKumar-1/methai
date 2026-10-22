@@ -1,0 +1,32 @@
+{
+  "name": "methai-demo",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~58.0.17",
+    "expo-build-properties": "~58.0.11",
+    "expo-constants": "~58.0.13",
+    "expo-dev-client": "~58.0.14",
+    "expo-speech": "~58.0.3",
+    "expo-speech-recognition": "^58.0.0",
+    "expo-status-bar": "~58.0.4",
+    "react": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-audio-api": "^0.13.6",
+    "react-native-worklets": "0.13.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3",
+    "ws": "^8.22.0"
+  },
+  "scripts": {
+    "start": "expo start --dev-client",
+    "server": "node server/index.mjs",
+    "ios": "expo run:ios",
+    "ios:device": "expo run:ios --device",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit"
+  },
+  "private": true
+}

@@ -34,8 +34,9 @@ function fakeVoice(heard: string): VoiceIO & { spoken: string[] } {
 function scriptedModel(seen: string[]): AgentModel {
   let step = 0;
   return {
-    async start(request, screen) {
+    async start(request, screen, _signal, instructions) {
       seen.push(request, screen);
+      expect(instructions).toContain('You are a voice assistant');
       return { toolCalls: [{ id: 't1', name: 'type_text', input: { element_id: 'input_email', text: 'a@b.co' } }] };
     },
     async continue(results) {
@@ -121,5 +122,28 @@ test('the glow mounts only while active', async () => {
     await run;
   });
   expect(provider.controller.active).toBe(false);
+  await act(async () => renderer.unmount());
+});
+
+test('a question from the model gets a spoken follow-up in the same conversation', async () => {
+  const heard = ['log me in', 'yes please'];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const followUps: string[] = [];
+  const model: AgentModel = {
+    start: async () => ({ text: 'Should I log you in with a@b.co?', toolCalls: [] }),
+    continue: async () => ({ text: 'You are logged in.', toolCalls: [] }),
+    followUp: async reply => {
+      followUps.push(reply);
+      return { toolCalls: [{ id: 'f1', name: 'press_element', input: { element_id: 'btn_log_in' } }] };
+    },
+  };
+  const { renderer, provider } = await mount({ voice, model });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(followUps).toEqual(['yes please']);
+  expect(log).toEqual(['login:']);
+  expect(spoken).toEqual(['How can I help?', 'Should I log you in with a@b.co?', 'You are logged in.']);
   await act(async () => renderer.unmount());
 });
