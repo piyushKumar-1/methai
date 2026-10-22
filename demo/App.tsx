@@ -1,5 +1,6 @@
+import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import {
   AIAction,
@@ -14,13 +15,15 @@ import {
 import { APP_CONTEXT } from './src/appContext';
 import { CHAT_MODELS, REALTIME_MODELS, SERVER_URL } from './src/config';
 import { devicePcmAudio } from './src/pcm-audio';
-import { deviceVoice } from './src/voice';
+import { deviceVoice, rankedVoices, type RankedVoice } from './src/voice';
 
 type Tab = 'Login' | 'Shop' | 'Settings';
 type Mode = 'pipeline' | 'realtime';
 
 const GREETING = 'Hi! How can I help?';
-const voice = deviceVoice();
+// Read on every utterance, so picking a voice in Settings applies immediately.
+let selectedVoice: string | undefined;
+const voice = deviceVoice({ voice: () => selectedVoice });
 let pcmAudio: ReturnType<typeof devicePcmAudio> | undefined;
 
 export default function App() {
@@ -89,7 +92,7 @@ function Header({ tab }: { tab: Tab }) {
 function AssistantStatus() {
   const { state, transcript, error } = useAssistant();
   if (state === 'idle' && !error && !transcript) return null;
-  const label = { idle: 'Done', greeting: 'Speaking…', listening: 'Listening…', thinking: 'Working…', speaking: 'Answering…' }[state];
+  const label = { idle: 'Done', greeting: 'Speaking…', listening: 'Listening…', thinking: 'Working…', speaking: 'Answering… (tap ⏭ to interrupt)' }[state];
   return (
     <AIIgnore>
       <View style={styles.status}>
@@ -243,9 +246,43 @@ function SettingsScreen(props: {
           ) : (
             <Chips options={REALTIME_MODELS.map(m => [m, m])} value={props.realtimeModel} onChange={props.setRealtimeModel} />
           )}
+          {props.mode === 'pipeline' && <VoicePicker />}
           <Text style={[styles.muted, { marginTop: 12 }]}>Server: {SERVER_URL}</Text>
         </View>
       </AIIgnore>
+    </>
+  );
+}
+
+const TIER = ['', 'standard', 'enhanced', 'premium'];
+
+function VoicePicker() {
+  const [voices, setVoices] = useState<RankedVoice[]>([]);
+  const [current, setCurrent] = useState<string | undefined>(selectedVoice);
+  useEffect(() => {
+    rankedVoices('en-US').then(v => setVoices(v.slice(0, 12)), () => {});
+  }, []);
+  const active = current ?? voices[0]?.identifier;
+  const choose = (id: string) => {
+    selectedVoice = id;
+    setCurrent(id);
+    Speech.stop();
+    Speech.speak('Hi! I can tap buttons and fill in forms for you.', { voice: id, useApplicationAudioSession: false });
+  };
+  return (
+    <>
+      <Text style={styles.label}>Voice (tap to preview)</Text>
+      <Chips
+        options={voices.map(v => [v.identifier, `${v.name} · ${v.language} · ${TIER[v.tier]}`])}
+        value={active ?? ''}
+        onChange={choose}
+      />
+      {voices.length > 0 && voices[0].tier < 3 && (
+        <Text style={styles.muted}>
+          For a much more natural voice, download a Premium one: iPhone Settings → Accessibility → Spoken Content → Voices →
+          English (e.g. Zoe or Ava, Premium). On Android, install a high-quality voice in Text-to-speech settings.
+        </Text>
+      )}
     </>
   );
 }

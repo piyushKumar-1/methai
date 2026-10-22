@@ -6,14 +6,15 @@ import { useAssistant } from './ScreenContextProvider';
 
 export interface AssistantButtonProps {
   style?: StyleProp<ViewStyle>;
-  /** Custom content; gets the current state. Default: a mic glyph, a stop glyph while running. */
+  /** Custom content; gets the current state. Default: mic when idle, skip while speaking, stop otherwise. */
   children?: (state: AssistantState) => ReactNode;
   accessibilityLabel?: string;
 }
 
 /**
- * Floating button that starts the voice assistant (tap again to stop). Excluded from the screen
- * context so the agent can't press it. Any other button can call useAssistant().toggle instead.
+ * Floating button for the voice assistant: tap to start, tap while it talks to cut it short, tap
+ * while it listens to end. Excluded from the screen context so the agent can't press it. Any other
+ * button can call useAssistant().toggle instead.
  */
 export function AssistantButton({ style, children, accessibilityLabel = 'Voice assistant' }: AssistantButtonProps) {
   const { state, toggle } = useAssistant();
@@ -24,10 +25,11 @@ export function AssistantButton({ style, children, accessibilityLabel = 'Voice a
         onPress={toggle}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
+        accessibilityHint={state === 'idle' ? 'Starts the voice assistant' : state === 'speaking' ? 'Interrupts the answer' : 'Ends the conversation'}
         accessibilityState={{ busy: running }}
         style={({ pressed }) => [styles.fab, pressed && styles.pressed, style]}
       >
-        {children ? children(state) : <Text style={styles.glyph}>{running ? '■' : '🎙'}</Text>}
+        {children ? children(state) : <Text style={styles.glyph}>{state === 'idle' ? '🎙' : state === 'speaking' ? '⏭' : '■'}</Text>}
       </Pressable>
     </AIIgnore>
   );

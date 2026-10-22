@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AgentGlow, AssistantButton, ScreenContextProvider, type AgentModel, type AssistantConfig, type VoiceIO } from '../src';
+import { AgentGlow, AssistantButton, isStopPhrase, ScreenContextProvider, type AgentModel, type AssistantConfig, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,7 +67,7 @@ beforeEach(() => {
 test('greets, listens, acts on the screen and speaks the answer', async () => {
   const voice = fakeVoice('log me in as a@b.co');
   const seen: string[] = [];
-  const { renderer, provider } = await mount({ greeting: 'Yes?', voice, model: scriptedModel(seen) });
+  const { renderer, provider } = await mount({ greeting: 'Yes?', voice, model: scriptedModel(seen), conversation: 'single' });
   const states: string[] = [];
   provider.assistant!.subscribe(s => states.push(s.state));
   const glowActive: boolean[] = [];
@@ -138,7 +138,7 @@ test('a question from the model gets a spoken follow-up in the same conversation
       return { toolCalls: [{ id: 'f1', name: 'press_element', input: { element_id: 'btn_log_in' } }] };
     },
   };
-  const { renderer, provider } = await mount({ voice, model });
+  const { renderer, provider } = await mount({ voice, model, conversation: 'single' });
   await act(async () => {
     await provider.assistant!.start();
   });
@@ -146,4 +146,70 @@ test('a question from the model gets a spoken follow-up in the same conversation
   expect(log).toEqual(['login:']);
   expect(spoken).toEqual(['How can I help?', 'Should I log you in with a@b.co?', 'You are logged in.']);
   await act(async () => renderer.unmount());
+});
+
+test('continuous: keeps listening after every answer until a stop phrase', async () => {
+  const heard = ['type a@b.co as my email', 'now log in', "ok that's all"];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const requests: string[] = [];
+  let step = 0;
+  const model: AgentModel = {
+    start: async request => (requests.push(request), { toolCalls: [{ id: 'a', name: 'type_text', input: { element_id: 'input_email', text: 'a@b.co' } }] }),
+    continue: async () => ({ text: step++ === 0 ? 'Email entered.' : 'Logged in.', toolCalls: [] }),
+    followUp: async reply => (requests.push(reply), { toolCalls: [{ id: 'b', name: 'press_element', input: { element_id: 'btn_log_in' } }] }),
+  };
+  const { renderer, provider } = await mount({ voice, model, farewell: 'Bye!' });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(requests).toEqual(['type a@b.co as my email', 'now log in']);
+  expect(log).toEqual(['login:a@b.co']);
+  expect(spoken).toEqual(['How can I help?', 'Email entered.', 'Logged in.', 'Bye!']);
+  expect(provider.assistant!.getStatus().state).toBe('idle');
+  await act(async () => renderer.unmount());
+});
+
+test('continuous: silence ends the session', async () => {
+  const heard = ['log me in'];
+  const voice: VoiceIO = { speak: async () => {}, listen: async () => heard.shift() ?? '' };
+  const model: AgentModel = { start: jest.fn(async () => ({ text: 'Which email?', toolCalls: [] })), continue: jest.fn() };
+  const { renderer, provider } = await mount({ voice, model });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(model.start).toHaveBeenCalledTimes(1);
+  expect(provider.controller.active).toBe(false);
+  await act(async () => renderer.unmount());
+});
+
+test('tapping while it speaks cuts the answer short and listens again', async () => {
+  const heard = ['tell me everything', 'thanks'];
+  const voice: VoiceIO = {
+    speak: (text, signal) =>
+      text.startsWith('A very long')
+        ? new Promise<void>(resolve => signal.addEventListener('abort', () => resolve()))
+        : Promise.resolve(),
+    listen: async () => heard.shift() ?? '',
+  };
+  const model: AgentModel = { start: async () => ({ text: 'A very long answer…', toolCalls: [] }), continue: jest.fn() };
+  const { renderer, provider } = await mount({ voice, model });
+  const assistant = provider.assistant!;
+  let run!: Promise<void>;
+  await act(async () => {
+    run = assistant.start();
+  });
+  await act(async () => new Promise(r => setTimeout(r, 400)));
+  expect(assistant.getStatus().state).toBe('speaking');
+  await act(async () => {
+    assistant.toggle(); // interrupt, not cancel
+    await run;
+  });
+  expect(heard).toEqual([]); // it listened again and heard "thanks"
+  await act(async () => renderer.unmount());
+});
+
+test('stop phrases only match short closing utterances', () => {
+  for (const t of ['stop', 'Thanks!', "ok that's all", 'thank you so much', 'bye bye', 'Never mind.']) expect(isStopPhrase(t)).toBe(true);
+  for (const t of ['stop the timer', 'cancel my order please', 'add one apple', 'thanks, now add bananas to the cart']) expect(isStopPhrase(t)).toBe(false);
 });

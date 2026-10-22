@@ -132,9 +132,19 @@ it holds the API key and makes the LLM call. Don't ship an LLM API key in the ap
 
 ## Voice assistant
 
-Voice-first, one request at a time, no chat UI: **tap → greeting is spoken → the user talks →
-the agent acts on the screen → the answer is spoken → idle**. The screen is captured when the user
-taps, so the request is about what they were looking at.
+Voice-first, no chat UI: **tap → greeting is spoken → the user talks → the agent acts on the screen
+→ the answer is spoken → it listens again…**. The screen is captured when the user taps, so the
+first request is about what they were looking at.
+
+- `conversation: 'continuous'` (default) keeps the same conversation going, so "and one more" or
+  "yes, check out" work. It ends on a short closing phrase ("stop", "that's all", "thanks, bye";
+  see `stopPhrases` and `isStopPhrase`, which ignores requests like "stop the timer"), on silence,
+  or when the button is tapped. `farewell` is spoken on the way out.
+- `conversation: 'single'` handles one request. It listens again only when the answer is a question.
+- One button does it all: tap to start, tap while it talks to cut the answer short (`interrupt()`),
+  tap while it listens to end.
+- Speech-to-speech models get the same behaviour, plus an `end_conversation` tool they call when
+  the user is done. `idleTimeoutMs` sets how long they wait in silence before ending.
 
 ```tsx
 import { AssistantButton, ScreenContextProvider, useAssistant } from 'react-native-screen-context';

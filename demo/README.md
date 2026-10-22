@@ -33,6 +33,15 @@ npm run ios:device      # terminal 2: builds a development build onto a connecte
 - Expo Go won't work: speech recognition and streaming audio are native modules, so this needs a
   development build. After the first build, `npm start` is enough for JS changes.
 
+## Conversation and voice
+
+- The conversation is continuous: after each answer it listens again. Say "that's all" or
+  "thanks, bye", stay quiet for ~10 s, or tap the button to end. Tap ⏭ while it talks to interrupt.
+- Voice quality: the app uses the best installed voice. iOS ships only compact voices by default,
+  and those sound robotic. Download a Premium voice once (Settings → Accessibility → Spoken Content
+  → Voices → English → e.g. Zoe or Ava (Premium)), then choose it in the app's Settings → Voice.
+  You can tap any voice there to preview it.
+
 ## App context
 
 [`src/appContext.ts`](src/appContext.ts) describes the app, its screens and its flows for the

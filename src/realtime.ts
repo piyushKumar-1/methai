@@ -29,8 +29,10 @@ export interface OpenAIRealtimeOptions {
   protocol?: 'ga' | 'beta';
   /** End the session if the user says nothing for this long after the greeting. Default 8000ms. */
   noSpeechTimeoutMs?: number;
-  /** After an answer, keep listening this long for a reply (e.g. to a confirmation question). Default 4000ms. */
+  /** 'single' conversations: after an answer, keep listening this long for a reply. Default 4000ms. */
   followUpTimeoutMs?: number;
+  /** 'continuous' conversations: end after this much silence following an answer. Default 12000ms. */
+  idleTimeoutMs?: number;
   /** Server VAD: silence that ends the user's turn. Default 600ms. */
   silenceDurationMs?: number;
   /** For tests / non-RN runtimes. Defaults to the global WebSocket (RN's accepts a headers option). */
@@ -39,11 +41,13 @@ export interface OpenAIRealtimeOptions {
 
 type FunctionCall = { call_id: string; name: string; arguments: string };
 
+const END_TOOL = 'end_conversation';
+
 /** Speech-to-speech over the OpenAI Realtime WebSocket protocol (LiteLLM's /v1/realtime speaks it too). */
 export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceModel {
   const protocol = opts.protocol ?? 'ga';
   return {
-    async run({ greeting, screen, instructions: systemPrompt, tools, onToolCall, setState, onTranscript, signal }) {
+    async run({ greeting, screen, instructions: systemPrompt, tools, onToolCall, setState, onTranscript, conversation, isStopPhrase, onInterrupt, signal }) {
       const conn = await opts.connect();
       const WS = opts.WebSocketImpl ?? (globalThis as any).WebSocket;
       const ws = new WS(conn.url, conn.protocols ?? [], conn.headers ? { headers: conn.headers } : undefined);
@@ -53,6 +57,7 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
         let phase: 'greeting' | 'conversation' = 'greeting';
         let userSpoke = false;
         let awaitingSpeech = false;
+        let endRequested = false;
         let capturing = false;
         let busy = false; // running tool calls
         let noSpeechTimer: ReturnType<typeof setTimeout> | undefined;
@@ -78,7 +83,15 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
         const onAbort = () => void finish();
         signal.addEventListener('abort', onAbort, { once: true });
 
-        const toolDefs = tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.schema }));
+        const toolDefs = [
+          ...tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.schema })),
+          {
+            type: 'function',
+            name: END_TOOL,
+            description: "End the voice session when the user is finished (\"that's all\", \"thanks, bye\", \"stop\"). Say a short goodbye first.",
+            parameters: { type: 'object', properties: {} },
+          },
+        ];
         const instructions = `${systemPrompt}\n\nCurrent screen:\n${screen}`;
         const vad = { type: 'server_vad', silence_duration_ms: opts.silenceDurationMs ?? 600 };
         const session =
@@ -121,6 +134,11 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
           busy = true;
           setState?.('thinking');
           for (const call of calls) {
+            if (call.name === END_TOOL) {
+              endRequested = true;
+              send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: 'ok' } });
+              continue;
+            }
             let input: unknown;
             try {
               input = JSON.parse(call.arguments || '{}');
@@ -131,8 +149,16 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
             send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: result.content } });
           }
           busy = false;
+          if (endRequested) return void finish();
           send({ type: 'response.create' });
         };
+
+        onInterrupt(() => {
+          // Cut the answer short; the server keeps listening for the user's next turn.
+          audio.flush();
+          send({ type: 'response.cancel' });
+          setState?.('listening');
+        });
 
         ws.onopen = () => {
           send({ type: 'session.update', session });
@@ -170,7 +196,11 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
               setState?.('thinking');
               break;
             case 'conversation.item.input_audio_transcription.completed':
-              if (event.transcript) onTranscript?.(String(event.transcript).trim());
+              if (event.transcript) {
+                const text = String(event.transcript).trim();
+                onTranscript?.(text);
+                if (isStopPhrase(text)) endRequested = true; // end after the model's reply
+              }
               break;
             case 'response.done': {
               const output: any[] = event.response?.output ?? [];
@@ -179,9 +209,12 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
                 void runToolCalls(calls).catch(e => finish(e));
               } else if (phase === 'greeting') {
                 void audio.drained().then(() => listen(opts.noSpeechTimeoutMs ?? 8000)).catch(e => finish(e));
+              } else if (endRequested) {
+                void finish();
               } else if (userSpoke && event.response?.status !== 'cancelled') {
-                // Answer given: let it finish playing, then wait briefly for a reply before ending.
-                void audio.drained().then(() => listen(opts.followUpTimeoutMs ?? 4000)).catch(e => finish(e));
+                // Answer given: once it has played, keep listening (continuous) or wait briefly for a reply.
+                const timeout = conversation === 'continuous' ? opts.idleTimeoutMs ?? 12000 : opts.followUpTimeoutMs ?? 4000;
+                void audio.drained().then(() => listen(timeout)).catch(e => finish(e));
               }
               break;
             }

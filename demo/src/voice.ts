@@ -1,13 +1,69 @@
 // On-device speech: expo-speech-recognition (speech-to-text) + expo-speech (text-to-speech).
 import * as Speech from 'expo-speech';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
+import { Platform } from 'react-native';
 import type { VoiceIO } from 'react-native-screen-context';
 
-export function deviceVoice({ lang = 'en-US', endOfSpeechMs = 1300, noSpeechTimeoutMs = 7000 } = {}): VoiceIO {
+export interface RankedVoice extends Speech.Voice {
+  /** 3 premium / neural, 2 enhanced / network, 1 standard. */
+  tier: number;
+}
+
+// iOS novelty voices (Bells, Zarvox…) and the old Eloquence voices sound robotic.
+const NOVELTY = /speech\.synthesis\.voice|eloquence/i;
+
+function tierOf(v: Speech.Voice): number {
+  const id = v.identifier.toLowerCase();
+  if (id.includes('premium') || id.includes('neural')) return 3;
+  if (id.includes('enhanced') || id.includes('network') || v.quality === Speech.VoiceQuality.Enhanced) return 2;
+  return 1;
+}
+
+/** Voices for `lang` (and the same base language), best first. */
+export async function rankedVoices(lang = 'en-US'): Promise<RankedVoice[]> {
+  const base = lang.split('-')[0].toLowerCase();
+  const all = await Speech.getAvailableVoicesAsync();
+  return all
+    .filter(v => v.language?.toLowerCase().startsWith(base) && !NOVELTY.test(v.identifier))
+    .map(v => ({ ...v, tier: tierOf(v) }))
+    .sort((a, b) => b.tier - a.tier || Number(b.language === lang) - Number(a.language === lang) || a.name.localeCompare(b.name));
+}
+
+/** Strips things that sound bad when read aloud (markdown, ids in brackets). */
+const speakable = (text: string) =>
+  text
+    .replace(/\[[a-z0-9_]+\]/gi, '')
+    .replace(/[*_#`>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+export interface DeviceVoiceOptions {
+  lang?: string;
+  /** Voice identifier, or a getter (so a settings screen can change it). Default: best installed voice. */
+  voice?: string | (() => string | undefined);
+  /** 1.0 is normal. Default 1.0 on iOS, 1.05 on Android. */
+  rate?: number;
+  pitch?: number;
+  endOfSpeechMs?: number;
+  /** End listening if nothing is said for this long. In a continuous conversation, this ends the session. */
+  noSpeechTimeoutMs?: number;
+}
+
+export function deviceVoice({ lang = 'en-US', voice, rate, pitch = 1.0, endOfSpeechMs = 1200, noSpeechTimeoutMs = 10000 }: DeviceVoiceOptions = {}): VoiceIO {
+  let best: Promise<string | undefined> | undefined;
+  const pickVoice = async () => {
+    const chosen = typeof voice === 'function' ? voice() : voice;
+    if (chosen) return chosen;
+    best ??= rankedVoices(lang).then(v => v[0]?.identifier, () => undefined);
+    return best;
+  };
+
   return {
-    speak(text, signal) {
-      return new Promise<void>(resolve => {
-        if (signal.aborted || !text) return resolve();
+    async speak(text, signal) {
+      const say = speakable(text);
+      if (signal.aborted || !say) return;
+      const identifier = await pickVoice();
+      await new Promise<void>(resolve => {
         const onAbort = () => {
           void Speech.stop();
           resolve();
@@ -17,7 +73,18 @@ export function deviceVoice({ lang = 'en-US', endOfSpeechMs = 1300, noSpeechTime
           signal.removeEventListener('abort', onAbort);
           resolve();
         };
-        Speech.speak(text, { language: lang, onDone: done, onStopped: done, onError: done });
+        Speech.speak(say, {
+          language: lang,
+          voice: identifier,
+          rate: rate ?? (Platform.OS === 'android' ? 1.05 : 1.0),
+          pitch,
+          // Own playback session on iOS: full volume on the loudspeaker, not the quiet
+          // voice-call route the recognizer's record session would give it.
+          useApplicationAudioSession: false,
+          onDone: done,
+          onStopped: done,
+          onError: done,
+        });
       });
     },
 
@@ -66,7 +133,6 @@ export function deviceVoice({ lang = 'en-US', endOfSpeechMs = 1300, noSpeechTime
           lang,
           interimResults: true,
           continuous: false,
-          // Speaker output stays on the loudspeaker for the spoken reply afterwards.
           iosCategory: { category: 'playAndRecord', categoryOptions: ['defaultToSpeaker', 'allowBluetooth'], mode: 'default' },
         });
         stopAfter(noSpeechTimeoutMs);

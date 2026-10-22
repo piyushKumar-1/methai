@@ -177,8 +177,10 @@ export function useScreenContext(): ScreenContextController {
 }
 
 export interface UseAssistant extends AssistantStatus {
-  /** Start, or stop if already running. Wire it to any button. */
+  /** Start; while speaking, interrupt; otherwise end the session. Wire it to any button. */
   toggle: () => void;
+  /** Cut the current spoken answer short and listen again. */
+  interrupt: () => void;
   start: () => Promise<void>;
   cancel: () => void;
 }
@@ -190,5 +192,11 @@ export function useAssistant(): UseAssistant {
     cb => assistant.subscribe(cb),
     () => assistant.getStatus(),
   );
-  return { ...status, toggle: () => assistant.toggle(), start: () => assistant.start(), cancel: () => assistant.cancel() };
+  return {
+    ...status,
+    toggle: () => assistant.toggle(),
+    interrupt: () => assistant.interrupt(),
+    start: () => assistant.start(),
+    cancel: () => assistant.cancel(),
+  };
 }
