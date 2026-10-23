@@ -223,13 +223,6 @@ SectionList (the biggest one on screen, or the one around a given element) to re
 The model sees at most 15 off-screen elements, skipping ones with no real label ("unlabeled
 button", "Slide 2 - undefined") and repeats of an element already listed.
 
-### Pauses while speaking
-
-`deviceVoice` ends the user's turn after a pause of `endOfSpeechMs` (default 1300ms). Android's
-recognizer often stops by itself sooner; when it does right after words, it is restarted and what
-follows is added on, so a pause mid-sentence doesn't cut the user off.
-Before the first word, a recognizer that gives up early ("no match") is restarted within the same
-listen until `noSpeechTimeoutMs` (default 8000ms), so the mic doesn't flick off and on.
 
 ### Waiting for the screen
 

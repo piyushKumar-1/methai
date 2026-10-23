@@ -102,7 +102,7 @@ describe('deviceVoice', () => {
   const signal = new AbortController().signal;
   const listen = async (script: (rec: ReturnType<typeof fakeRecognizer>) => void) => {
     const rec = fakeRecognizer();
-    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, noSpeechTimeoutMs: 300 });
+    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
     const heard = io.listen(signal);
     await new Promise(r => setTimeout(r, 0));
     script(rec);
@@ -137,7 +137,7 @@ describe('deviceVoice', () => {
     const rec = fakeRecognizer();
     let finishDestroy!: () => void;
     rec.destroy = jest.fn(() => new Promise<void>(resolve => (finishDestroy = resolve)));
-    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, noSpeechTimeoutMs: 300 });
+    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
     const first = io.listen(signal);
     await new Promise(r => setTimeout(r, 0));
     rec.error('7');
@@ -191,46 +191,6 @@ describe('deviceVoice', () => {
     rec.emit('partial', ['go to Forum mall']);
     rec.error('7');
     expect((await next).text).toBe('go to Forum mall');
-  });
-
-  test('a pause mid-sentence does not end the turn: the recognizer is restarted and the rest is added on', async () => {
-    const rec = fakeRecognizer();
-    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, endOfSpeechMs: 600 });
-    const partials: string[] = [];
-    const heard = io.listen(signal, p => partials.push(p));
-    await new Promise(r => setTimeout(r, 0));
-    rec.emit('partial', ['book a ride to']);
-    rec.onSpeechEnd?.({}); // the phone decides the user is done after a short pause
-    await new Promise(r => setTimeout(r, 350));
-    expect(rec.start).toHaveBeenCalledTimes(2); // listening again for the rest
-    rec.emit('partial', ['Forum mall']);
-    expect(partials[partials.length - 1]).toBe('book a ride to Forum mall');
-    rec.error('7');
-    await new Promise(r => setTimeout(r, 10));
-    expect(rec.start).toHaveBeenCalledTimes(3); // the recognizer stopped right after words again
-    expect((await heard).text).toBe('book a ride to Forum mall'); // nothing more within the pause
-  });
-
-  test('a turn ends when the user really stops: a long pause, or our own silence timer', async () => {
-    const rec = fakeRecognizer();
-    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, endOfSpeechMs: 100 });
-    const heard = io.listen(signal);
-    await new Promise(r => setTimeout(r, 0));
-    rec.emit('partial', ['yes']);
-    expect((await heard).text).toBe('yes');
-    expect(rec.start).toHaveBeenCalledTimes(1);
-  });
-
-  test('a recognizer that gives up before the user speaks is restarted within the same listen', async () => {
-    const rec = fakeRecognizer();
-    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, noSpeechTimeoutMs: 2000, endOfSpeechMs: 100 });
-    const heard = io.listen(signal);
-    await new Promise(r => setTimeout(r, 0));
-    rec.error('7'); // "no match" after a second and a half of silence
-    await new Promise(r => setTimeout(r, 10));
-    expect(rec.start).toHaveBeenCalledTimes(2); // still the same listen
-    rec.emit('partial', ['yes']);
-    expect((await heard).text).toBe('yes');
   });
 
   test("the recognizer's other guesses come back as alternatives", async () => {

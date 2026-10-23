@@ -51,11 +51,7 @@ export interface DeviceVoiceOptions {
   speakable?: (text: string) => string;
   /** Speaking rate: Android multiplier (1 = normal), iOS AVSpeech scale (0.5 = normal). Default 1.08 / 0.53. */
   rate?: number;
-  /**
-   * How long a pause ends the user's turn. Pauses shorter than this never cut them off: if the
-   * phone's recognizer stops by itself sooner (Android's often does after about a second), it is
-   * restarted and what follows is added on. Default 1300ms.
-   */
+  /** Stop listening this long after the last new word. Default 900ms. */
   endOfSpeechMs?: number;
   /** End a listening turn if nothing is said for this long. Default 8000ms. */
   noSpeechTimeoutMs?: number;
@@ -79,13 +75,6 @@ export interface DeviceVoice extends VoiceIO {
 // Any of these ends the current utterance.
 const TTS_END_EVENTS = ['tts-finish', 'tts-cancel', 'tts-error'];
 
-// A restarted recognizer takes a moment to hear again; allow for it on top of the pause.
-const CONTINUE_GRACE_MS = 500;
-// Sessions joined into one turn at most, so a noisy room can't keep a turn open forever.
-const MAX_PARTS = 6;
-
-const joinWords = (a: string, b: string) => [a.trim(), b.trim()].filter(Boolean).join(' ');
-
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 /**
@@ -103,7 +92,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   const { recognizer: rec, tts, locale, log = () => {} } = opts;
   const speakable = opts.speakable ?? toCaptionText;
-  const endOfSpeechMs = opts.endOfSpeechMs ?? 1300;
+  const endOfSpeechMs = opts.endOfSpeechMs ?? 900;
   const noSpeechTimeoutMs = opts.noSpeechTimeoutMs ?? 8000;
   const micOpenDelayMs = opts.micOpenDelayMs ?? 150;
   const bargeIn = opts.bargeIn ?? true;
@@ -156,26 +145,15 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     /** Where partials and mic levels go; can be set while the session runs. */
     attach(onPartial?: (text: string) => void, onLevel?: (level: number) => void): void;
     abort(reason: string): void;
-    /** True when the recognizer stopped by itself (its own end of speech, no match…), not on our timer or an abort. */
-    endedByRecognizer(): boolean;
-    /** When the latest new words arrived (0 if none). */
-    lastWordAt(): number;
   }
 
   /** One recognizer session, started once the previous one has shut down. */
-  const startSession = async (
-    label: string,
-    onWords?: (text: string, session: Session) => void,
-    silenceMs = noSpeechTimeoutMs,
-  ): Promise<Session> => {
+  const startSession = async (label: string, onWords?: (text: string, session: Session) => void): Promise<Session> => {
     // A recognizer that died never answers stop/destroy, so don't wait for it forever.
     await Promise.race([teardown, sleep(600)]);
     let transcript = '';
     let others: string[] = [];
     let settled = false;
-    let byRecognizer = false;
-    let speechEnded = false;
-    let wordsAt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let partialTo: ((text: string) => void) | undefined;
     let levelTo: ((level: number) => void) | undefined;
@@ -202,10 +180,6 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       clearTimeout(timer);
       timer = setTimeout(() => finish(undefined, reason), ms);
     };
-    const recognizerStopped = (error: Error | undefined, reason: string) => {
-      if (!settled) byRecognizer = true;
-      finish(error, reason);
-    };
     const session: Session = {
       result,
       alternatives: () => others,
@@ -215,8 +189,6 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         if (transcript) onPartial?.(transcript);
       },
       abort: reason => finish(undefined, reason),
-      endedByRecognizer: () => byRecognizer,
-      lastWordAt: () => wordsAt,
     };
     const onText = (kind: string) => (e: RecognizerResults) => {
       // Some recognizers send an empty final result after good partials; never let it wipe what
@@ -224,35 +196,25 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       const text = e.value?.find(candidate => candidate.trim().length > 0);
       log(`${kind}: ${JSON.stringify(e.value ?? [])}`);
       if (!text) return;
-      if (text !== transcript) wordsAt = Date.now();
       transcript = text;
       others = (e.value ?? []).map(v => v.trim()).filter(v => v && v !== text);
       partialTo?.(transcript);
       onWords?.(transcript, session);
-      // Android's final result means its recognizer has stopped (iOS sends "final" results all along).
-      if (kind === 'final' && Platform.OS === 'android') recognizerStopped(undefined, 'final result');
-      else if (!speechEnded) stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
+      stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
     };
     rec.onSpeechPartialResults = onText('partial');
     rec.onSpeechResults = onText('final');
-    // The recognizer is done once it reports end of speech; its final result follows shortly.
-    rec.onSpeechEnd = () => {
-      speechEnded = true;
-      clearTimeout(timer);
-      timer = setTimeout(() => recognizerStopped(undefined, 'speech end'), 300);
-    };
+    rec.onSpeechEnd = () => stopAfter(300, 'speech end');
     rec.onSpeechVolumeChanged = e => levelTo?.(micLevelFromRms(e.value));
     // "No match" / speech timeout just mean silence; transient errors too (the caller listens
     // again). Only real failures are errors.
     rec.onSpeechError = e => {
       const detail = `recognizer error ${e.error?.code ?? '?'}/${e.error?.message ?? ''}`;
-      if (transcript || isNoSpeechError(e.error?.code, e.error?.message) || isTransientSpeechError(e.error?.code)) recognizerStopped(undefined, detail);
-      else recognizerStopped(new Error(e.error?.message ?? 'Speech recognition failed'), detail);
+      if (transcript || isNoSpeechError(e.error?.code, e.error?.message) || isTransientSpeechError(e.error?.code)) finish(undefined, detail);
+      else finish(new Error(e.error?.message ?? 'Speech recognition failed'), detail);
     };
-    stopAfter(silenceMs, 'nothing said');
+    stopAfter(noSpeechTimeoutMs, 'nothing said');
     log(`${label} started`);
-    // No silence-length extras: Google's recognizer applies them before the first word too and
-    // gives up ("no match") within a second and a half. Restarting covers pauses instead.
     rec.start(locale()).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
     return session;
   };
@@ -349,43 +311,16 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       const quietFor = Date.now() - spokeUntil;
       if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
       if (signal.aborted) return { text: '' };
-      // What earlier recognizer sessions in this turn heard, when the user paused mid-sentence.
-      let before = '';
-      // The other guesses for the latest words, with what came before them.
-      let alternatives: string[] = [];
-      let current: Session | null = null;
-      const onAbort = () => current?.abort('aborted');
+      const session = await startSession('listen');
+      session.attach(onPartial, onLevel);
+      const onAbort = () => session.abort('aborted');
       signal.addEventListener('abort', onAbort, { once: true });
-      // Before the first word, a recognizer that gives up early is restarted until this deadline,
-      // so the mic stays on in one go instead of flicking off and on.
-      const waitUntil = Date.now() + noSpeechTimeoutMs;
       try {
-        for (let part = 1; ; part++) {
-          const waiting = !before;
-          // A continued session only waits for the rest of the pause before giving up.
-          const silenceMs = waiting ? Math.max(waitUntil - Date.now(), 0) : endOfSpeechMs + CONTINUE_GRACE_MS;
-          const session = await startSession(part === 1 ? 'listen' : `listen (part ${part})`, undefined, silenceMs);
-          current = session;
-          if (signal.aborted) session.abort('aborted');
-          session.attach(text => onPartial?.(joinWords(before, text)), onLevel);
-          // A later part failing must not lose what was already heard.
-          const heard = part === 1 ? await session.result : await session.result.catch(() => '');
-          if (heard) alternatives = session.alternatives().map(a => joinWords(before, a));
-          before = joinWords(before, heard);
-          const pausedFor = Date.now() - session.lastWordAt();
-          const keepListening =
-            heard && !signal.aborted && session.endedByRecognizer() && pausedFor < endOfSpeechMs && part < MAX_PARTS;
-          if (keepListening) {
-            log(`recognizer stopped ${pausedFor}ms after the last word; still listening`);
-            continue;
-          }
-          const stillWaiting = waiting && !heard && !signal.aborted && session.endedByRecognizer() && Date.now() < waitUntil - 500;
-          if (stillWaiting && part < MAX_PARTS * 3) continue;
-          const request = stripEcho(before, lastSpoken);
-          if (request !== before) log(`echo removed: ${JSON.stringify(before)} → ${JSON.stringify(request)}`);
-          const others = request ? alternatives.map(a => stripEcho(a, lastSpoken)).filter(a => a && a !== request) : [];
-          return others.length ? { text: request, alternatives: others } : { text: request };
-        }
+        const heard = await session.result;
+        const request = stripEcho(heard, lastSpoken);
+        if (request !== heard) log(`echo removed: ${JSON.stringify(heard)} → ${JSON.stringify(request)}`);
+        const alternatives = request ? session.alternatives().map(a => stripEcho(a, lastSpoken)).filter(Boolean) : [];
+        return alternatives.length ? { text: request, alternatives } : { text: request };
       } finally {
         signal.removeEventListener('abort', onAbort);
       }
