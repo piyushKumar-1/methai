@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AgentGlow, AssistantButton, isStopPhrase, ScreenContextProvider, type AgentModel, type AssistantConfig, type VoiceIO } from '../src';
+import { AgentGlow, AssistantButton, isStopPhrase, OPENING_REQUEST, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -212,4 +212,76 @@ test('tapping while it speaks cuts the answer short and listens again', async ()
 test('stop phrases only match short closing utterances', () => {
   for (const t of ['stop', 'Thanks!', "ok that's all", 'thank you so much', 'bye bye', 'Never mind.']) expect(isStopPhrase(t)).toBe(true);
   for (const t of ['stop the timer', 'cancel my order please', 'add one apple', 'thanks, now add bananas to the cart']) expect(isStopPhrase(t)).toBe(false);
+});
+
+test('endOnSilence: false keeps listening through silence until a stop phrase', async () => {
+  const heard = ['', '', 'log me in', '', 'thanks'];
+  const voice: VoiceIO = { speak: async () => {}, listen: async () => heard.shift() ?? 'thanks' };
+  const model: AgentModel = { start: jest.fn(async () => ({ text: 'Which email?', toolCalls: [] })), continue: jest.fn() };
+  const { renderer, provider } = await mount({ voice, model, endOnSilence: false });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(model.start).toHaveBeenCalledTimes(1);
+  expect(heard).toEqual([]);
+  expect(provider.assistant!.getStatus().log).toEqual([
+    { role: 'assistant', text: 'How can I help?' },
+    { role: 'user', text: 'log me in' },
+    { role: 'assistant', text: 'Which email?' },
+    { role: 'user', text: 'thanks' },
+    { role: 'assistant', text: 'Okay.' },
+  ]);
+  await act(async () => renderer.unmount());
+});
+
+test('a greeting function can hand the opening to the model, which continues a resumed conversation', async () => {
+  const heard = ['book a cab', 'thanks', 'yes'];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const starts: string[] = [];
+  const followUps: string[] = [];
+  const model: AgentModel = {
+    start: async request => (starts.push(request), { text: 'Where to?', toolCalls: [] }),
+    continue: jest.fn(),
+    followUp: async reply => (followUps.push(reply), { text: reply === OPENING_REQUEST ? 'Still want that cab?' : 'Booked.', toolCalls: [] }),
+  };
+  const sessions: SessionStart[] = [];
+  const greeting = (session: SessionStart) => (sessions.push(session), session.resumed ? undefined : 'Hi!');
+  const { renderer, provider } = await mount({ voice, model, greeting, resumeWithinMs: 60_000 });
+
+  await act(async () => {
+    await provider.assistant!.start(); // "Hi!" → "book a cab" → "Where to?" → "thanks" ends it
+  });
+  await act(async () => {
+    await provider.assistant!.start(); // reopened: the model opens and the conversation goes on
+  });
+
+  expect(sessions.map(s => s.resumed)).toEqual([false, true]);
+  expect(starts).toEqual(['book a cab']);
+  expect(followUps).toEqual([OPENING_REQUEST, 'yes']);
+  expect(spoken).toEqual(['Hi!', 'Where to?', 'Okay.', 'Still want that cab?', 'Booked.']);
+  // The resumed session keeps the earlier lines.
+  expect(provider.assistant!.getStatus().log.map(m => m.text)).toEqual(['Hi!', 'book a cab', 'Where to?', 'thanks', 'Okay.', 'Still want that cab?', 'yes', 'Booked.']);
+  await act(async () => renderer.unmount());
+});
+
+test('a failed model call is not continued by the next session', async () => {
+  const heard = ['book a cab', 'book a cab'];
+  const voice: VoiceIO = { speak: async () => {}, listen: async () => heard.shift() ?? '' };
+  const model: AgentModel = {
+    start: jest.fn().mockRejectedValueOnce(new Error('network')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
+    continue: jest.fn(),
+    followUp: jest.fn(),
+  };
+  const { renderer, provider } = await mount({ voice, model, resumeWithinMs: 60_000, greeting: () => 'Hi!' });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(provider.assistant!.getStatus().error).toBe('network');
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(model.start).toHaveBeenCalledTimes(2);
+  expect(model.followUp).not.toHaveBeenCalled();
+  await act(async () => renderer.unmount());
 });

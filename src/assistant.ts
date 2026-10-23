@@ -72,9 +72,45 @@ export function isStopPhrase(text: string, phrases: string[] = DEFAULT_STOP_PHRA
   });
 }
 
+/** What the assistant knows when a session starts, for choosing how to open it. */
+export interface SessionStart {
+  /** The screen the user is on (as the model sees it). */
+  screen: string;
+  /** True when this session picks up the previous conversation (see `resumeWithinMs`). */
+  resumed: boolean;
+}
+
+/** One line of the conversation, for captions or a transcript. */
+export interface AssistantMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+/** Asked of the model when it should open the session itself (a `greeting` function returned undefined). */
+export const OPENING_REQUEST =
+  "(The user just opened the voice assistant; they haven't said anything yet. Don't act on the screen. " +
+  'Say one short, natural line to start: if the conversation so far is unfinished, pick it up from there; ' +
+  'otherwise offer help that fits this screen. Ending with a question is fine.)';
+
+const MAX_LOG = 50;
+
 export type AssistantConfig = {
-  /** Spoken when the assistant is triggered. Default "How can I help?" */
-  greeting?: string;
+  /**
+   * Spoken when the assistant is triggered. A function decides per session: return the line to
+   * say, or undefined to let the model open from the screen and the conversation so far.
+   * Default "How can I help?"
+   */
+  greeting?: string | ((session: SessionStart) => string | undefined);
+  /**
+   * Reopening the assistant within this long continues the previous conversation (history and
+   * all) instead of starting over. Default 0: every session starts fresh.
+   */
+  resumeWithinMs?: number;
+  /**
+   * 'continuous' conversations: end the session when the user says nothing. Default true; false
+   * keeps listening until the user closes it (button or stop phrase).
+   */
+  endOnSilence?: boolean;
   /** What the app is, its screens and flows; added to the system prompt. */
   app?: AppContext;
   /** Replaces the built-in agent rules (the app context is still appended). */
@@ -100,12 +136,16 @@ export interface AssistantStatus {
   state: AssistantState;
   /** Live transcript while listening, then the final one. */
   transcript: string;
+  /** The conversation so far, oldest first (kept across resumed sessions). */
+  log: AssistantMessage[];
   error?: string;
 }
 
 /** Voice-first assistant: greet → listen → act on the screen → speak → (listen again…) → idle. */
 export class VoiceAssistant {
-  private status: AssistantStatus = { state: 'idle', transcript: '' };
+  private status: AssistantStatus = { state: 'idle', transcript: '', log: [] };
+  /** The model whose history is a clean, finished exchange that a new session can continue. */
+  private conversation: { model: AgentModel; endedAt: number } | null = null;
   private abort: AbortController | null = null;
   private interruptHandler: (() => void) | null = null;
   private listeners = new Set<(s: AssistantStatus) => void>();
@@ -165,8 +205,13 @@ export class VoiceAssistant {
     return s === 'greeting' ? 'speaking' : s;
   }
 
+  private addToLog(role: AssistantMessage['role'], text: string) {
+    if (text.trim()) this.set({ log: [...this.status.log, { role, text: text.trim() }].slice(-MAX_LOG) });
+  }
+
   /** Speaks, but can be cut short with interrupt() without ending the session. */
   private async speak(voice: VoiceIO, text: string, signal: AbortSignal): Promise<void> {
+    this.addToLog('assistant', text);
     const offLevel = voice.onSpeakingLevel?.(level => this.controller.reportVoice('speaking', level));
     const speech = new AbortController();
     const onAbort = () => speech.abort();
@@ -187,13 +232,22 @@ export class VoiceAssistant {
     this.abort = abort;
     const { signal } = abort;
     const config = this.config;
-    const greeting = config.greeting ?? 'How can I help?';
+    const model = 'model' in config ? config.model : undefined;
+    const previous = this.conversation;
+    const resumed =
+      !!model?.followUp &&
+      previous !== null &&
+      previous.model === model &&
+      Date.now() - previous.endedAt < (config.resumeWithinMs ?? 0);
+    if (!resumed) this.conversation = null;
     this.controller.setActive(true);
-    this.set({ state: 'greeting', transcript: '', error: undefined });
+    this.set({ state: 'greeting', transcript: '', error: undefined, ...(!resumed && { log: [] }) });
     this.interruptHandler = null;
     try {
       // Capture before the user speaks: this is the screen they are asking about.
       const screen = await this.controller.describe();
+      const greeting =
+        typeof config.greeting === 'function' ? config.greeting({ screen, resumed }) : config.greeting ?? 'How can I help?';
 
       const conversation = config.conversation ?? 'continuous';
       const stop = (text: string) => isStopPhrase(text, config.stopPhrases);
@@ -201,7 +255,7 @@ export class VoiceAssistant {
       if ('realtime' in config) {
         this.set({ state: 'listening' });
         await config.realtime.run({
-          greeting,
+          greeting: greeting ?? 'How can I help?',
           screen,
           instructions: buildInstructions(config.app, config.systemPrompt),
           tools: SCREEN_TOOLS,
@@ -220,8 +274,24 @@ export class VoiceAssistant {
         return;
       }
 
-      const { voice, model } = config;
+      const { voice } = config;
+      const agentModel = config.model;
       const opts = { signal, maxSteps: config.maxSteps, app: config.app, systemPrompt: config.systemPrompt };
+      // The screen captured at the tap goes with the first model call; later ones capture afresh.
+      let firstScreen: string | undefined = screen;
+      // Continues the conversation when there is a clean one to continue, else starts one. A call
+      // that fails or is cut off can leave the history mid-exchange, so it is only kept on success.
+      const ask = async (request: string) => {
+        const live = this.conversation?.model === agentModel && !!agentModel.followUp;
+        this.conversation = null;
+        const callOpts = { ...opts, screen: firstScreen };
+        firstScreen = undefined;
+        const answer = live
+          ? await runAgentFollowUp(this.controller, agentModel, request, callOpts)
+          : await runAgent(this.controller, agentModel, request, callOpts);
+        this.conversation = { model: agentModel, endedAt: Date.now() };
+        return answer;
+      };
       const listen = async () => {
         this.set({ state: 'listening', transcript: '' });
         const heard = (
@@ -235,19 +305,39 @@ export class VoiceAssistant {
         return heard;
       };
 
-      this.set({ state: 'greeting' });
-      await this.speak(voice, greeting, signal);
+      // No fixed greeting: the model opens, from the screen and the conversation so far. If that
+      // fails the session still goes on; it just listens without an opening line.
+      const opening =
+        greeting ??
+        (await ask(OPENING_REQUEST).catch(() => {
+          if (signal.aborted) throw new Error('Aborted');
+          return '';
+        }));
+      if (opening) {
+        this.set({ state: 'greeting' });
+        await this.speak(voice, opening, signal);
+      }
+      const keepOnSilence = conversation === 'continuous' && config.endOnSilence === false;
       let answer = '';
-      for (let turn = 0; turn < (config.maxTurns ?? 30); turn++) {
+      let turn = 0;
+      while (turn < (config.maxTurns ?? 30) && !signal.aborted) {
         if (turn > 0) {
           const keepListening = conversation === 'continuous' || (answer.trim().endsWith('?') && turn <= (config.maxFollowUps ?? 3));
           if (!keepListening) break;
         }
         const request = await listen();
         if (!request) {
+          if (signal.aborted) break;
+          if (keepOnSilence) {
+            // A short breather, so a recognizer that returns at once can't spin the loop.
+            await new Promise<void>(resolve => setTimeout(() => resolve(), 250));
+            continue;
+          }
           if (turn === 0 && config.noInputReply) await this.speak(voice, config.noInputReply, signal);
           break;
         }
+        turn++;
+        this.addToLog('user', request);
         if (stop(request)) {
           this.set({ state: 'speaking' });
           await this.speak(voice, config.farewell ?? 'Okay.', signal);
@@ -255,10 +345,7 @@ export class VoiceAssistant {
         }
         this.set({ state: 'thinking' });
         // Later turns continue the same conversation, so "and one more" or "yes" make sense.
-        answer =
-          turn === 0 || !model.followUp
-            ? await runAgent(this.controller, model, request, { ...opts, screen: turn === 0 ? screen : undefined })
-            : await runAgentFollowUp(this.controller, model, request, opts);
+        answer = await ask(request);
         if (answer) {
           this.set({ state: 'speaking' });
           await this.speak(voice, answer, signal);
@@ -267,6 +354,7 @@ export class VoiceAssistant {
     } catch (e: any) {
       if (!signal.aborted) this.set({ error: e?.message ?? String(e) });
     } finally {
+      if (this.conversation) this.conversation = { ...this.conversation, endedAt: Date.now() };
       this.abort = null;
       this.controller.setActive(false);
       this.set({ state: 'idle' });
