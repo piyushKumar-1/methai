@@ -204,10 +204,29 @@ function visit(fiber: Fiber, state: WalkState, owner: Draft | null, onChain: boo
     state.drafts.push(draft);
     current = draft;
     chain = true;
+  } else if (kind && owner && onChain) {
+    // The same control further down its wrapper chain (a Card component with onPress rendering
+    // a Pressable): the inner one often carries the real label ("Mini, ₹120, capacity 4") while
+    // the outer only has a title. Its explicit label and hint win over the outer's fallbacks.
+    adoptLabel(owner, fiber.memoizedProps);
   }
 
   walk(fiber.child, state, current, chain, depth + 1);
   if (pushedAnnotation) state.annotations.pop();
+}
+
+function adoptLabel(owner: Draft, inner: any) {
+  const outer = owner.props ?? {};
+  const label = str(inner?.accessibilityLabel) ?? str(inner?.['aria-label']);
+  const hint = str(inner?.accessibilityHint);
+  const hasLabel = str(outer.accessibilityLabel) ?? str(outer['aria-label']);
+  if ((label && !hasLabel) || (hint && !str(outer.accessibilityHint))) {
+    owner.props = {
+      ...outer,
+      ...(label && !hasLabel && { accessibilityLabel: label }),
+      ...(hint && !str(outer.accessibilityHint) && { accessibilityHint: hint }),
+    };
+  }
 }
 
 function slug(s: string): string {

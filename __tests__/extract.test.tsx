@@ -170,3 +170,28 @@ Interactive elements (refer to them by the id in brackets):
 - [action_refresh] action "refresh" args schema: {"type":"object"} — Reloads the account"
 `);
 });
+
+test("a card component's inner Pressable label wins over its title, even with hidden content", () => {
+  function RideCard({ title, fare, selected, onPress }: { title: string; fare: number; selected: boolean; onPress: () => void }) {
+    return (
+      <Pressable onPress={onPress} accessibilityLabel={`${title}, ₹ ${fare}, capacity 4`}>
+        <View importantForAccessibility={selected ? 'yes' : 'no-hide-descendants'}>
+          <Text>{title}</Text>
+          <Text>₹{fare}</Text>
+        </View>
+      </Pressable>
+    );
+  }
+  let renderer!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    renderer = TestRenderer.create(
+      <ScreenContextProvider>
+        <RideCard title="Non-AC Mini" fare={120} selected={false} onPress={() => {}} />
+        <RideCard title="AC Cab" fare={180} selected onPress={() => {}} />
+      </ScreenContextProvider>,
+    );
+  });
+  const provider = renderer.root.findByType(ScreenContextProvider).instance as ScreenContextProvider;
+  expect(provider.controller.captureSync().elements.map(e => e.label)).toEqual(['Non-AC Mini, ₹ 120, capacity 4', 'AC Cab, ₹ 180, capacity 4']);
+  act(() => renderer.unmount());
+});
