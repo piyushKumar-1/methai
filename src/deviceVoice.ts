@@ -251,11 +251,9 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     };
     stopAfter(silenceMs, 'nothing said');
     log(`${label} started`);
-    // Ask Android's recognizer to allow the same pause we do; engines that ignore this are restarted.
-    rec.start(locale(), {
-      EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: endOfSpeechMs,
-      EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: endOfSpeechMs,
-    }).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
+    // No silence-length extras: Google's recognizer applies them before the first word too and
+    // gives up ("no match") within a second and a half. Restarting covers pauses instead.
+    rec.start(locale()).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
     return session;
   };
 
@@ -358,10 +356,15 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       let current: Session | null = null;
       const onAbort = () => current?.abort('aborted');
       signal.addEventListener('abort', onAbort, { once: true });
+      // Before the first word, a recognizer that gives up early is restarted until this deadline,
+      // so the mic stays on in one go instead of flicking off and on.
+      const waitUntil = Date.now() + noSpeechTimeoutMs;
       try {
         for (let part = 1; ; part++) {
+          const waiting = !before;
           // A continued session only waits for the rest of the pause before giving up.
-          const session = await startSession(part === 1 ? 'listen' : `listen (part ${part})`, undefined, part === 1 ? noSpeechTimeoutMs : endOfSpeechMs + CONTINUE_GRACE_MS);
+          const silenceMs = waiting ? Math.max(waitUntil - Date.now(), 0) : endOfSpeechMs + CONTINUE_GRACE_MS;
+          const session = await startSession(part === 1 ? 'listen' : `listen (part ${part})`, undefined, silenceMs);
           current = session;
           if (signal.aborted) session.abort('aborted');
           session.attach(text => onPartial?.(joinWords(before, text)), onLevel);
@@ -376,6 +379,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
             log(`recognizer stopped ${pausedFor}ms after the last word; still listening`);
             continue;
           }
+          const stillWaiting = waiting && !heard && !signal.aborted && session.endedByRecognizer() && Date.now() < waitUntil - 500;
+          if (stillWaiting && part < MAX_PARTS * 3) continue;
           const request = stripEcho(before, lastSpoken);
           if (request !== before) log(`echo removed: ${JSON.stringify(before)} → ${JSON.stringify(request)}`);
           const others = request ? alternatives.map(a => stripEcho(a, lastSpoken)).filter(a => a && a !== request) : [];
