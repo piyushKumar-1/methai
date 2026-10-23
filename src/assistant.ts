@@ -48,9 +48,11 @@ export interface RealtimeVoiceModel {
  */
 export type ConversationMode = 'continuous' | 'single';
 
+// Words that are also requests in many apps ("cancel" a ride, "close" a ticket, "done" a task)
+// are left out, so they reach the model instead of ending the conversation.
 export const DEFAULT_STOP_PHRASES = [
   'stop', 'stop listening', "that's all", 'that is all', "that's it", 'thanks', 'thank you', 'bye', 'goodbye',
-  'good bye', 'never mind', 'nevermind', 'cancel', "i'm done", 'done', 'nothing', 'no thanks', 'exit', 'close',
+  'good bye', 'never mind', 'nevermind', "i'm done", 'no thanks', 'exit',
 ];
 
 const normalize = (t: string) => t.toLowerCase().replace(/[^a-z' ]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -89,8 +91,8 @@ export interface AssistantMessage {
 /** Asked of the model when it should open the session itself (a `greeting` function returned undefined). */
 export const OPENING_REQUEST =
   "(The user just opened the voice assistant; they haven't said anything yet. Don't act on the screen. " +
-  'Say one short, natural line to start: if the conversation so far is unfinished, pick it up from there; ' +
-  'otherwise offer help that fits this screen. Ending with a question is fine.)';
+  'Say one short line, under ten words: if the conversation so far is unfinished, pick it up from there; ' +
+  'otherwise ask briefly what they need here.)';
 
 const MAX_LOG = 50;
 
@@ -106,6 +108,11 @@ export type AssistantConfig = {
    * all) instead of starting over. Default 0: every session starts fresh.
    */
   resumeWithinMs?: number;
+  /**
+   * Speak text the model sends along with tool calls ("Sure, finding autos…") while it keeps
+   * working. Default false: only answers are spoken.
+   */
+  speakProgress?: boolean;
   /**
    * 'continuous' conversations: end the session when the user says nothing. Default true; false
    * keeps listening until the user closes it (button or stop phrase).
@@ -338,7 +345,11 @@ export class VoiceAssistant {
       const ask = async (request: string) => {
         const live = this.conversation?.model === agentModel && !!agentModel.followUp;
         this.conversation = null;
-        const callOpts = { ...opts, screen: firstScreen, onProgress: (text: string) => this.sayProgress(voice, text, signal) };
+        const callOpts = {
+          ...opts,
+          screen: firstScreen,
+          ...(config.speakProgress && { onProgress: (text: string) => this.sayProgress(voice, text, signal) }),
+        };
         firstScreen = undefined;
         const answer = live
           ? await runAgentFollowUp(this.controller, agentModel, request, callOpts)
@@ -378,12 +389,14 @@ export class VoiceAssistant {
           const keepListening = conversation === 'continuous' || (answer.trim().endsWith('?') && turn <= (config.maxFollowUps ?? 3));
           if (!keepListening) break;
         }
+        const listenedAt = Date.now();
         const request = await listen();
         if (!request) {
           if (signal.aborted) break;
           if (keepOnSilence) {
-            // A short breather, so a recognizer that returns at once can't spin the loop.
-            await new Promise<void>(resolve => setTimeout(() => resolve(), 250));
+            // Straight back to listening (a gap is a chance to miss a short "yes"), unless the
+            // recognizer returned at once, which would spin the loop.
+            if (Date.now() - listenedAt < 300) await new Promise<void>(resolve => setTimeout(() => resolve(), 300));
             continue;
           }
           if (turn === 0 && config.noInputReply) await this.speak(voice, config.noInputReply, signal);

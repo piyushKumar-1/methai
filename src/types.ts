@@ -51,6 +51,8 @@ export interface ScreenSnapshot {
   elements: ScreenElement[];
   /** Visible non-interactive text (headings, messages, errors), in tree order. */
   texts: string[];
+  /** True when a spinner or busy element is showing: the screen is still loading. */
+  loading?: boolean;
 }
 
 export interface CaptureOptions {

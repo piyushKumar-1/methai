@@ -295,7 +295,7 @@ test('text sent with tool calls is spoken as progress while the agent keeps work
     continue: async () => ({ text: 'Done.', toolCalls: [] }),
     followUp: jest.fn(),
   };
-  const { renderer, provider } = await mount({ voice, model });
+  const { renderer, provider } = await mount({ voice, model, speakProgress: true });
   await act(async () => {
     await provider.assistant!.start();
   });

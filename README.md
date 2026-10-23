@@ -149,9 +149,9 @@ first request is about what they were looking at.
 - `greeting` can be a function of `{ screen, resumed }`: return a fixed line, or `undefined` to let
   the model open the session itself from the screen and the conversation so far
   (e.g. "Still want the auto to Cubbon Park?").
-- Text the model sends together with tool calls ("Sure, finding autos to the airport.") is spoken
-  right away while the agent keeps working, so multi-step tasks don't start with a long silence
-  (`onProgress` on `runAgent` for your own loops).
+- `speakProgress: true` speaks text the model sends together with tool calls ("Sure, finding autos
+  to the airport.") right away while the agent keeps working (`onProgress` on `runAgent` for your
+  own loops). Off by default: only answers are spoken.
 - `useAssistant().log` is the conversation so far (`{ role, text }[]`), for captions or a transcript.
 - One button does it all: tap to start, tap while it talks to cut the answer short (`interrupt()`),
   tap while it listens to end.
@@ -175,6 +175,44 @@ import { AssistantButton, ScreenContextProvider, useAssistant } from 'react-nati
 // …or from any button of your own
 const { state, transcript, toggle } = useAssistant();   // state: idle | greeting | listening | thinking | speaking
 ```
+
+### On-device voice
+
+`deviceVoice()` is a ready VoiceIO on the phone's own engines. Pass in the speech libraries you use
+(the library itself has no native dependencies):
+
+```ts
+import Voice from '@react-native-voice/voice';
+import Tts from 'react-native-tts';
+import { deviceVoice } from 'react-native-screen-context';
+
+const voice = deviceVoice({
+  recognizer: Voice,
+  tts: Tts,
+  locale: () => 'en-IN',                        // read every turn, so it can follow the app language
+  requestMicPermission: askForMic,              // optional
+  speakable: text => text.replace(/₹(\d+)/g, '$1 rupees'),  // optional: how replies are read aloud
+  log: console.log,                             // optional: listen started / partials / why it ended
+});
+```
+
+It picks the most natural installed voice for the language, removes its own words if the mic hears
+them from the loudspeaker, keeps one-word answers that the recognizer reports as "no match", reports
+mic loudness for the glow, and never hangs on an engine that dies mid-utterance. The helpers it uses
+(`pickBestVoice`, `stripEcho`, `micLevelFromRms`, …) are exported for your own adapters.
+
+### Model wrappers
+
+- `withModelTimeout(model, ms)`: a stuck backend ends in an error instead of silence.
+- `withModelLogging(model, log)`: requests, screens, tool calls, results, replies and timings.
+- `withConfirmationGuard(model, { isSensitive })`: opt-in hard rule that matching controls are only
+  pressed after the user said yes (a prompt can ask the model to confirm; only this guarantees it).
+
+### Waiting for the screen
+
+After every action the agent waits until the screen settles (no changes for a moment, no spinner)
+instead of a fixed delay, and the built-in `wait_for_screen` tool lets the model wait for data that
+arrives later (search results, prices). A snapshot is marked loading while a spinner shows.
 
 ### Ready-made UI
 

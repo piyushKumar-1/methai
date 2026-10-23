@@ -6,9 +6,18 @@ const q = (s: string) => JSON.stringify(s);
 export const AGENT_INSTRUCTIONS = `You are a voice assistant that operates a mobile app on the user's behalf by calling tools.
 You see the app's current screen as text: visible text plus interactive elements with ids in brackets.
 Tool results include the screen after the action; only use ids from the most recent screen.
-Act one step at a time. Never enter passwords, payment details or secrets the user did not say.
-Ask before irreversible actions (payments, deletions, sending messages) unless the user asked for exactly that.
-Your replies are spoken aloud: one or two short sentences of plain speech, no markdown, lists, emoji or ids.`;
+
+Think before acting:
+- Know exactly what the user wants before you touch anything. If a key detail is missing or unclear (which place, which option, which item), ask one short question instead of guessing.
+- Do only what was asked. No extra steps, no "helpful" detours.
+- Act one step at a time and check each result on the new screen before the next step. If it is still loading, or what you need is not listed yet, call wait_for_screen rather than assuming.
+- If something did not work, say so plainly instead of pretending it did.
+- Never enter passwords, payment details or secrets the user did not say. Ask before irreversible actions (payments, deletions, sending messages) unless the user asked for exactly that.
+
+Talk little. Replies are spoken aloud:
+- Usually one short sentence (about 15 words). Up to three options when the user has to choose.
+- Don't narrate your steps, repeat the user's request back, describe the screen, or offer more help at the end.
+- Plain speech: no markdown, lists, emoji or ids.`;
 
 function describeElement(el: ScreenElement): string {
   const parts: string[] = [`[${el.id}]`];
@@ -45,6 +54,7 @@ function describeElement(el: ScreenElement): string {
 export function formatSnapshot(snapshot: ScreenSnapshot): string {
   const lines: string[] = [];
   lines.push(`Screen: ${snapshot.screen ?? 'unknown'}`);
+  if (snapshot.loading) lines.push('(Still loading: a spinner is showing. Call wait_for_screen before relying on what is listed.)');
   if (snapshot.texts.length) {
     lines.push('Visible text:');
     for (const t of snapshot.texts) lines.push(`- ${t}`);
@@ -111,6 +121,19 @@ export function buildInstructions(app?: AppContext, base: string = AGENT_INSTRUC
   return parts.join('\n');
 }
 
+export const WAIT_TOOL = 'wait_for_screen';
+
+/** Tool input as an object; `input` may be an object or a JSON string. */
+export function parseArgs(input: unknown): Record<string, any> | undefined {
+  if (typeof input !== 'string') return input && typeof input === 'object' ? (input as Record<string, any>) : undefined;
+  try {
+    const parsed = JSON.parse(input);
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const elementId = { type: 'string', description: 'The id shown in brackets in the screen context, e.g. "btn_log_in".' };
 
 /**
@@ -149,6 +172,16 @@ export const SCREEN_TOOLS: ToolSpec[] = [
       type: 'object',
       properties: { element_id: elementId, value: { type: 'boolean', description: 'true = on, false = off.' } },
       required: ['element_id', 'value'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: WAIT_TOOL,
+    description:
+      'Wait for the screen to finish loading after an action (search results, prices, a new page) and see it again. Returns as soon as it settles. Use it instead of guessing when what you need is not on screen yet or a spinner is showing.',
+    schema: {
+      type: 'object',
+      properties: { seconds: { type: 'number', description: 'Longest to wait, 1–10. Default 5.' } },
       additionalProperties: false,
     },
   },
