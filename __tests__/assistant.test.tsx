@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AgentGlow, AssistantButton, buildInstructions, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
+import { AgentGlow, AssistantButton, buildInstructions, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -263,6 +263,17 @@ test('a greeting function can hand the opening to the model, which continues a r
   // The resumed session keeps the earlier lines.
   expect(provider.assistant!.getStatus().log.map(m => m.text)).toEqual(['Hi!', 'book a cab', 'Where to?', 'thanks', 'Okay.', 'Still want that cab?', 'yes', 'Booked.']);
   await act(async () => renderer.unmount());
+});
+
+test('screenChangeNote tells the model when the user moved on by themselves', () => {
+  const choose = 'Screen: Home (ChooseRide stage)\nVisible text:\n- Choose a ride';
+  const tracking = 'Screen: RideTracking\nVisible text:\n- Driver is on the way';
+  expect(screenChangeNote(choose, tracking)).toBe(
+    '(The user changed the screen themselves since you last acted: it was "Home (ChooseRide stage)", now it is "RideTracking". ' +
+      'Whatever you were doing may be done or dropped; go by the current screen.)',
+  );
+  expect(screenChangeNote(choose, `${choose}\n- 4 mins`)).toBe(''); // same screen, new details
+  expect(screenChangeNote('', tracking)).toBe('');
 });
 
 test('a failed model call is not continued by the next session', async () => {

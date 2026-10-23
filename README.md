@@ -146,6 +146,8 @@ first request is about what they were looking at.
 - `resumeWithinMs` continues the previous conversation when the assistant is reopened within that
   time, so "yes, book it" still makes sense after closing it. A conversation whose last model call
   failed or was cut off is never continued.
+  Every model call gets the current screen; if the user changed it themselves since the model last
+  acted, the model is told so and goes by the new screen rather than the old task.
 - `greeting` can be a function of `{ screen, resumed }`: return a fixed line, or `undefined` to let
   the model open the session itself from the screen and the conversation so far
   (e.g. "Still want the auto to Cubbon Park?").

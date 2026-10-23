@@ -111,10 +111,26 @@ export interface AssistantMessage {
 /** Asked of the model when it should open the session itself (a `greeting` function returned undefined). */
 export const OPENING_REQUEST =
   "(The user just opened the voice assistant; they haven't said anything yet. Don't act on the screen. " +
-  'Say one short line, under ten words: if the conversation so far is unfinished, pick it up from there; ' +
+  'Say one short line, under ten words: if the conversation so far is unfinished and still fits the current screen, pick it up from there; ' +
   'otherwise ask briefly what they need here.)';
 
 const MAX_LOG = 50;
+
+const screenTitle = (description: string) => description.split('\n', 1)[0]?.replace(/^Screen:\s*/, '').trim() ?? '';
+
+/**
+ * Tells the model the screen changed while it wasn't acting, i.e. the user tapped around
+ * themselves, so it goes by the current screen instead of carrying on with the old task.
+ */
+export function screenChangeNote(lastSeen: string, now: string): string {
+  const was = screenTitle(lastSeen);
+  const is = screenTitle(now);
+  if (!was || !is || was === is) return '';
+  return (
+    `(The user changed the screen themselves since you last acted: it was "${was}", now it is "${is}". ` +
+    'Whatever you were doing may be done or dropped; go by the current screen.)'
+  );
+}
 
 export type AssistantConfig = {
   /**
@@ -178,7 +194,8 @@ export interface AssistantStatus {
 export class VoiceAssistant {
   private status: AssistantStatus = { state: 'idle', transcript: '', log: [] };
   /** The model whose history is a clean, finished exchange that a new session can continue. */
-  private conversation: { model: AgentModel; endedAt: number } | null = null;
+  /** The live conversation, and the screen as the model last saw it (to notice the user's own taps). */
+  private conversation: { model: AgentModel; endedAt: number; lastScreen: string } | null = null;
   private abort: AbortController | null = null;
   private interruptHandler: (() => void) | null = null;
   /** A typed request waiting for the next listening turn, and the turn listening right now. */
@@ -371,17 +388,21 @@ export class VoiceAssistant {
       // that fails or is cut off can leave the history mid-exchange, so it is only kept on success.
       const ask = async (request: string) => {
         const live = this.conversation?.model === agentModel && !!agentModel.followUp;
+        const before = this.conversation?.lastScreen;
         this.conversation = null;
+        const screenNow = firstScreen ?? (await this.controller.describe());
+        const note = live && before ? screenChangeNote(before, screenNow) : '';
+        if (note) request = `${note}\n${request}`;
         const callOpts = {
           ...opts,
-          screen: firstScreen,
+          screen: screenNow,
           ...(config.speakProgress && { onProgress: (text: string) => this.sayProgress(voice, text, signal) }),
         };
         firstScreen = undefined;
         const answer = live
           ? await runAgentFollowUp(this.controller, agentModel, request, callOpts)
           : await runAgent(this.controller, agentModel, request, callOpts);
-        this.conversation = { model: agentModel, endedAt: Date.now() };
+        this.conversation = { model: agentModel, endedAt: Date.now(), lastScreen: await this.controller.describe() };
         return answer;
       };
       const listen = async () => {

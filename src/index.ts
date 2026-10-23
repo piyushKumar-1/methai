@@ -8,7 +8,7 @@ export { runAgent, runAgentFollowUp } from './agent';
 export { openAIChatModel } from './openai';
 export type { OpenAIChatModelOptions } from './openai';
 export type { AgentModel, ModelToolCall, ModelToolResult, ModelTurn, RunAgentOptions } from './agent';
-export { DEFAULT_STOP_PHRASES, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, VoiceAssistant } from './assistant';
+export { DEFAULT_STOP_PHRASES, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, VoiceAssistant } from './assistant';
 export type { AssistantConfig, AssistantMessage, HeardSpeech, ConversationMode, SessionStart, AssistantState, AssistantStatus, RealtimeVoiceModel, VoiceIO } from './assistant';
 export { openAIRealtimeModel } from './realtime';
 export type { OpenAIRealtimeOptions, PcmAudioIO, RealtimeConnection } from './realtime';
