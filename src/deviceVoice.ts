@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import type { VoiceIO } from './assistant';
 import { toCaptionText } from './captions';
-import { isBargeIn, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
+import { isInterruption, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
 
 /** Results event from the speech recognizer: best guess first. */
 export interface RecognizerResults {
@@ -58,8 +58,8 @@ export interface DeviceVoiceOptions {
   /** Pause after speaking before the mic opens, so the loudspeaker's tail isn't heard. Default 150ms. */
   micOpenDelayMs?: number;
   /**
-   * Listen while speaking, and stop talking as soon as the user starts (their words, not the
-   * assistant's own voice from the speaker). What they say becomes the next request. Default true.
+   * Listen while speaking and stop talking when the user says "stop", "wait", "hold on", "hey"…;
+   * then listen to them afresh. Default true.
    */
   bargeIn?: boolean;
   /** Step-by-step trace (listen started, partials, why it ended, errors), for debugging. */
@@ -144,9 +144,6 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     abort(reason: string): void;
   }
 
-  // The session in which the user talked over the assistant; the next listen() carries it on.
-  let barged: Session | null = null;
-
   /** One recognizer session, started once the previous one has shut down. */
   const startSession = async (label: string, onWords?: (text: string, session: Session) => void): Promise<Session> => {
     // A recognizer that died never answers stop/destroy, so don't wait for it forever.
@@ -217,34 +214,32 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   };
 
   /**
-   * Keeps a recognizer running while `spoken` is being said; when it hears the user (not the
-   * echo of `spoken`), calls `interrupt` and leaves that session running for the next listen().
+   * Keeps a recognizer running while `spoken` is being said and calls `interrupt` when the user
+   * says a stop word. Nothing heard here becomes a request: it is mostly the reply's own echo.
    */
-  const watchForBargeIn = (spoken: string, interrupt: () => void) => {
+  const watchForInterruption = (spoken: string, interrupt: () => void) => {
     let done = false;
     let current: Session | null = null;
     const loop = (async () => {
       if (opts.requestMicPermission && !(await opts.requestMicPermission())) return;
       while (!done) {
-        const session = await startSession('barge-in watch', (text, s) => {
-          if (done || !isBargeIn(text, spoken)) return;
+        const session = await startSession('interrupt watch', (text, s) => {
+          if (done || !isInterruption(text, spoken)) return;
           done = true;
-          barged = s;
-          log(`barge-in: ${JSON.stringify(text)}`);
+          log(`interrupted: ${JSON.stringify(text)}`);
+          s.abort('interrupted');
           interrupt();
         });
-        if (done && barged !== session) {
+        if (done) {
           session.abort('done speaking');
           return;
         }
         current = session;
         await session.result.catch(() => '');
-        if (barged === session) return;
       }
     })();
     return {
       async stop() {
-        if (barged) return;
         done = true;
         current?.abort('done speaking');
         await loop;
@@ -265,9 +260,6 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     async speak(text, signal) {
       const say = speakable(text);
       if (signal.aborted || !say) return;
-      // A barge-in nobody picked up (the conversation ended) must not leak into a later turn.
-      barged?.abort('stale');
-      barged = null;
       lastSpoken = say;
       if (!(await ensureTts())) return;
       await prepareVoice(locale());
@@ -301,33 +293,25 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         } catch (err) {
           fail(err);
         }
-        if (bargeIn) watch = watchForBargeIn(say, stopSpeaking);
+        if (bargeIn) watch = watchForInterruption(say, stopSpeaking);
       });
       await watch?.stop();
     },
 
     async listen(signal, onPartial, onLevel) {
-      // The user started talking over the last answer: carry on with that session.
-      const carried = barged;
-      barged = null;
-      if (!carried) {
-        if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
-        // Only right after speaking: between silent listening turns every millisecond the mic is
-        // off is a chance to miss a one-word "yes".
-        const quietFor = Date.now() - spokeUntil;
-        if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
-      }
-      if (signal.aborted) {
-        carried?.abort('aborted');
-        return '';
-      }
-      const session = carried ?? (await startSession('listen'));
+      if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
+      // Only right after speaking: between silent listening turns every millisecond the mic is off
+      // is a chance to miss a one-word "yes".
+      const quietFor = Date.now() - spokeUntil;
+      if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
+      if (signal.aborted) return '';
+      const session = await startSession('listen');
       session.attach(onPartial, onLevel);
       const onAbort = () => session.abort('aborted');
       signal.addEventListener('abort', onAbort, { once: true });
       try {
         const heard = await session.result;
-        const request = stripEcho(heard, lastSpoken, { anywhere: !!carried });
+        const request = stripEcho(heard, lastSpoken);
         if (request !== heard) log(`echo removed: ${JSON.stringify(heard)} → ${JSON.stringify(request)}`);
         return request;
       } finally {

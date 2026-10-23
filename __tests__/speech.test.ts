@@ -1,4 +1,4 @@
-import { canSpeak, deviceVoice, isBargeIn, isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type RecognizerResults, type SpeechRecognizerModule, type TextToSpeechModule } from '../src';
+import { canSpeak, deviceVoice, isInterruption, isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type RecognizerResults, type SpeechRecognizerModule, type TextToSpeechModule } from '../src';
 
 const voice = (id: string, language: string, quality = 300, extra = {}) => ({
   id,
@@ -47,20 +47,17 @@ describe('stripEcho', () => {
   });
 });
 
-describe('barge-in', () => {
-  const spoken = 'Your auto is 4 minutes away. The fare is 120 rupees.';
-  test("the assistant's own voice coming back is not the user", () => {
-    expect(isBargeIn('your auto is 4 minutes', spoken)).toBe(false);
-    expect(isBargeIn('the fair is 120 rupees', spoken)).toBe(false); // one misheard word
+describe('isInterruption', () => {
+  test("the reply's own echo, however garbled, does not interrupt (real cases from a phone)", () => {
+    expect(isInterruption("cancel what's the", "The search is cancelled. What's the correct destination for the mall?")).toBe(false);
+    expect(isInterruption('the destination is now next is called', 'The destination is now Nexus Koramangala Mall.')).toBe(false);
+    expect(isInterruption('you are what', 'Your Auto is booked for 88 rupees.')).toBe(false);
   });
-  test('new words or an interrupting word are', () => {
-    expect(isBargeIn('book a cab instead', spoken)).toBe(true);
-    expect(isBargeIn('stop', spoken)).toBe(true);
-    expect(isBargeIn('minutes away wait', spoken)).toBe(true);
-  });
-  test('echo from anywhere in the reply is stripped from a barge-in', () => {
-    expect(stripEcho('4 minutes away book a cab instead', spoken, { anywhere: true })).toBe('book a cab instead');
-    expect(stripEcho('4 minutes away book a cab instead', spoken)).toBe('4 minutes away book a cab instead');
+  test('a stop word that the reply does not contain does', () => {
+    expect(isInterruption('stop', 'Your auto is 4 minutes away.')).toBe(true);
+    expect(isInterruption('your auto is wait', 'Your auto is 4 minutes away.')).toBe(true);
+    expect(isInterruption('hold on', 'Booking the Mini for 665 rupees.')).toBe(true);
+    expect(isInterruption('wait', 'Please wait while I look.')).toBe(false);
   });
 });
 
@@ -166,9 +163,9 @@ describe('deviceVoice', () => {
     expect(await heard).toBe('to the airport');
   });
 
-  test('talking over the assistant stops it, and what was said becomes the next request', async () => {
+  test('saying "stop" while it talks cuts it off; its own echo does not, and nothing heard becomes a request', async () => {
     const rec = fakeRecognizer();
-    const stop = jest.fn(async () => {});
+    const stop = jest.fn();
     const handlers: Record<string, () => void> = {};
     const slowTts: TextToSpeechModule = {
       ...tts,
@@ -180,18 +177,19 @@ describe('deviceVoice', () => {
       addListener: (event, handler) => ((handlers[event] = handler), { remove: () => {} }), // never finishes on its own
     };
     const io = deviceVoice({ recognizer: rec, tts: slowTts, locale: () => 'en-IN', micOpenDelayMs: 0 });
-    const speaking = io.speak('Your auto is 4 minutes away.', signal);
+    const speaking = io.speak('Your destination is now Nexus Koramangala Mall.', signal);
     await new Promise(r => setTimeout(r, 10));
     expect(rec.start).toHaveBeenCalledTimes(1); // listening while it speaks
-    rec.emit('partial', ['your auto is']); // its own voice: keeps talking
+    rec.emit('partial', ['your destination is now next is called']); // its own voice, garbled
     expect(stop).not.toHaveBeenCalled();
-    rec.emit('partial', ['your auto is book a cab']);
+    rec.emit('partial', ['your destination is now next is called stop']);
     await speaking;
     expect(stop).toHaveBeenCalled();
     const next = io.listen(signal);
-    rec.emit('partial', ['your auto is book a cab instead']);
+    await new Promise(r => setTimeout(r, 10));
+    expect(rec.start).toHaveBeenCalledTimes(2); // a fresh session for the user's request
+    rec.emit('partial', ['go to Forum mall']);
     rec.error('7');
-    expect(await next).toBe('book a cab instead');
-    expect(rec.start).toHaveBeenCalledTimes(1); // the same session carried on
+    expect(await next).toBe('go to Forum mall');
   });
 });
