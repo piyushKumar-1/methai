@@ -13,7 +13,7 @@ export interface RecognizerResults {
  * export fits as is. Handlers are assigned, the way that library takes them.
  */
 export interface SpeechRecognizerModule {
-  start(locale: string, options?: Record<string, unknown>): Promise<void>;
+  start(locale: string, options?: Record<string, unknown>): Promise<unknown>;
   stop(): Promise<unknown>;
   destroy(): Promise<unknown>;
   removeAllListeners(): void;
