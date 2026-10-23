@@ -15,7 +15,10 @@ export interface AgentGlowProps {
   colors?: string[];
   /** 'edge' only: width of the bright edge line. Default 3. */
   thickness?: number;
-  /** Match the device's screen corners. Default 44. */
+  /**
+   * Clip the glow to rounded corners. Default 0: the glow runs to the edges and the display's own
+   * rounded corners shape it; a radius that doesn't match the device leaves gaps in the corners.
+   */
   cornerRadius?: number;
   /** Speed of the flow: time for one full cycle. Default 4000ms (edge) / 7000ms (aura). */
   durationMs?: number;
@@ -33,7 +36,7 @@ export function AgentGlow({ variant = 'aura', ...props }: AgentGlowProps) {
   if (!mounted) return null;
   return (
     <AIIgnore>
-      <Animated.View style={[StyleSheet.absoluteFill, styles.root, { borderRadius: props.cornerRadius ?? 44, opacity: fade }]}>
+      <Animated.View style={[StyleSheet.absoluteFill, styles.root, { borderRadius: props.cornerRadius ?? 0, opacity: fade }]}>
         {variant === 'edge' ? <EdgeGlow {...props} reduceMotion={reduceMotion} /> : <AuraGlow {...props} reduceMotion={reduceMotion} />}
       </Animated.View>
     </AIIgnore>
@@ -163,7 +166,9 @@ function AuraGlow({ controller, colors = DEFAULT_COLORS, durationMs = 7000, redu
           width: bw,
           height: bh,
           left: W * x - bw / 2,
-          top: H - bh * 0.5,
+          // Anchored to the overlay's bottom, not the window height: with edge-to-edge layouts the
+          // two differ, and a top offset would float the glow above the bottom edge.
+          bottom: -bh * 0.5,
           opacity: 0.85,
           ...background(`radial-gradient(closest-side, ${rgba(c(i), 0.85)} 0%, ${rgba(c(i), 0.35)} 45%, ${rgba(c(i), 0)} 100%)`),
           transformOrigin: 'bottom',
