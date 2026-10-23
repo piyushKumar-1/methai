@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AgentGlow, AssistantButton, isStopPhrase, OPENING_REQUEST, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
+import { AgentGlow, AssistantButton, buildInstructions, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -302,4 +302,35 @@ test('text sent with tool calls is spoken as progress while the agent keeps work
   expect(log).toEqual(['login:']);
   expect(spoken).toEqual(['How can I help?', 'Sure, logging you in.', 'Done.', 'Okay.']);
   await act(async () => renderer.unmount());
+});
+
+test('user context goes into the system prompt and recognizer alternatives into the request', async () => {
+  const voice: VoiceIO = {
+    speak: async () => {},
+    listen: jest
+      .fn()
+      .mockResolvedValueOnce({ text: 'to know my three office', alternatives: ['to know my office', 'to know Atri office'] })
+      .mockResolvedValue('thanks'),
+  };
+  const seen: { request: string; instructions: string }[] = [];
+  const model: AgentModel = {
+    start: async (request, _screen, _signal, instructions) => (seen.push({ request, instructions }), { text: 'Namma Yatri office?', toolCalls: [] }),
+    continue: jest.fn(),
+    followUp: async () => ({ text: 'Okay.', toolCalls: [] }),
+  };
+  const { renderer, provider } = await mount({ voice, model, userContext: async () => 'Saved places: Work: Namma Yatri office, Koramangala' });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(seen[0].instructions).toContain('About the user');
+  expect(seen[0].instructions).toContain('Work: Namma Yatri office');
+  expect(seen[0].request).toBe('to know my three office\n(Speech recognition, other possible readings: "to know my office", "to know Atri office")');
+  expect(provider.assistant!.getStatus().log[1]).toEqual({ role: 'user', text: 'to know my three office' });
+  await act(async () => renderer.unmount());
+});
+
+test('requestWithAlternatives skips duplicates and empty guesses', () => {
+  expect(requestWithAlternatives({ text: 'yes' })).toBe('yes');
+  expect(requestWithAlternatives({ text: 'yes', alternatives: ['Yes', ' ', 'yeah'] })).toBe('yes\n(Speech recognition, other possible readings: "yeah")');
+  expect(buildInstructions(undefined, 'Base.', '  ')).toBe('Base.');
 });

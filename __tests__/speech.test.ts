@@ -106,7 +106,7 @@ describe('deviceVoice', () => {
     const heard = io.listen(signal);
     await new Promise(r => setTimeout(r, 0));
     script(rec);
-    return { heard: await heard, io };
+    return { heard: (await heard).text, io };
   };
 
   test('a one-word answer followed by "no match" is still heard', async () => {
@@ -141,7 +141,7 @@ describe('deviceVoice', () => {
     const first = io.listen(signal);
     await new Promise(r => setTimeout(r, 0));
     rec.error('7');
-    expect(await first).toBe('');
+    expect((await first).text).toBe('');
     const second = io.listen(signal);
     await new Promise(r => setTimeout(r, 50));
     expect(rec.start).toHaveBeenCalledTimes(1); // still waiting for destroy()
@@ -149,7 +149,7 @@ describe('deviceVoice', () => {
     await new Promise(r => setTimeout(r, 0));
     expect(rec.start).toHaveBeenCalledTimes(2);
     rec.error('7');
-    expect(await second).toBe('');
+    expect((await second).text).toBe('');
   });
 
   test('its own words heard from the loudspeaker are removed', async () => {
@@ -160,7 +160,7 @@ describe('deviceVoice', () => {
     await new Promise(r => setTimeout(r, 0));
     rec.emit('partial', ['would you like to go to the airport']);
     rec.error('7');
-    expect(await heard).toBe('to the airport');
+    expect((await heard).text).toBe('to the airport');
   });
 
   test('saying "stop" while it talks cuts it off; its own echo does not, and nothing heard becomes a request', async () => {
@@ -190,6 +190,16 @@ describe('deviceVoice', () => {
     expect(rec.start).toHaveBeenCalledTimes(2); // a fresh session for the user's request
     rec.emit('partial', ['go to Forum mall']);
     rec.error('7');
-    expect(await next).toBe('go to Forum mall');
+    expect((await next).text).toBe('go to Forum mall');
+  });
+
+  test("the recognizer's other guesses come back as alternatives", async () => {
+    const rec = fakeRecognizer();
+    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
+    const heard = io.listen(signal);
+    await new Promise(r => setTimeout(r, 0));
+    rec.emit('final', ['to know my three office', 'to know my office', 'office', 'to know Atri office']);
+    rec.error('7');
+    expect(await heard).toEqual({ text: 'to know my three office', alternatives: ['to know my office', 'office', 'to know Atri office'] });
   });
 });

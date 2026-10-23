@@ -9,9 +9,29 @@ export interface VoiceIO {
    * Listens until the user stops talking and resolves with the final transcript ('' if nothing).
    * `onLevel` takes the mic loudness (0–1) for visuals, if the engine reports it.
    */
-  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<string>;
+  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<string | HeardSpeech>;
   /** Optional: loudness (0–1) of the speech being played, for visuals. */
   onSpeakingLevel?: (listener: (level: number) => void) => () => void;
+}
+
+/** What the recognizer heard: its best guess, plus the other guesses it considered. */
+export interface HeardSpeech {
+  text: string;
+  /** Other readings ("to know my office", "to know Atri office"), given to the model to resolve mishearings. */
+  alternatives?: string[];
+}
+
+/**
+ * The request as the model gets it: the best guess, plus the recognizer's other guesses when it
+ * had any, so a misheard name can be worked out ("to know my three office" → "Namma Yatri office").
+ */
+export function requestWithAlternatives(heard: HeardSpeech): string {
+  const seen = new Set([heard.text.trim().toLowerCase()]);
+  const others = (heard.alternatives ?? [])
+    .map(a => a.trim())
+    .filter(a => a && !seen.has(a.toLowerCase()) && seen.add(a.toLowerCase()))
+    .slice(0, 3);
+  return others.length ? `${heard.text}\n(Speech recognition, other possible readings: ${others.map(a => JSON.stringify(a)).join(', ')})` : heard.text;
 }
 
 /**
@@ -122,6 +142,12 @@ export type AssistantConfig = {
   app?: AppContext;
   /** Replaces the built-in agent rules (the app context is still appended). */
   systemPrompt?: string;
+  /**
+   * Who the user is, read at the start of every session: saved places, recent trips or orders,
+   * preferences… The model uses it to understand what they mean, including names the speech
+   * recognizer got wrong. Keep it short; it goes into the system prompt.
+   */
+  userContext?: () => string | undefined | Promise<string | undefined>;
   /** Spoken when nothing was heard. Default: stays silent and goes idle. */
   noInputReply?: string;
   maxSteps?: number;
@@ -264,14 +290,14 @@ export class VoiceAssistant {
   }
 
   /** Listens for speech, unless a request is typed first (which stops the mic). */
-  private listenOrType(voice: VoiceIO, signal: AbortSignal): Promise<string> {
+  private listenOrType(voice: VoiceIO, signal: AbortSignal): Promise<HeardSpeech> {
     const mic = new AbortController();
     const onAbort = () => mic.abort();
     signal.addEventListener('abort', onAbort, { once: true });
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<HeardSpeech>((resolve, reject) => {
       this.typedHandler = text => {
         mic.abort();
-        resolve(text);
+        resolve({ text });
       };
       voice
         .listen(
@@ -279,7 +305,7 @@ export class VoiceAssistant {
           partial => this.set({ transcript: partial }),
           level => this.controller.reportVoice('listening', level),
         )
-        .then(resolve, reject);
+        .then(heard => resolve(typeof heard === 'string' ? { text: heard } : heard), reject);
     }).finally(() => {
       this.typedHandler = null;
       signal.removeEventListener('abort', onAbort);
@@ -307,6 +333,7 @@ export class VoiceAssistant {
     try {
       // Capture before the user speaks: this is the screen they are asking about.
       const screen = await this.controller.describe();
+      const userContext = config.userContext ? await Promise.resolve(config.userContext()).catch(() => undefined) : undefined;
       const greeting =
         typeof config.greeting === 'function' ? config.greeting({ screen, resumed }) : config.greeting ?? 'How can I help?';
 
@@ -318,7 +345,7 @@ export class VoiceAssistant {
         await config.realtime.run({
           greeting: greeting ?? 'How can I help?',
           screen,
-          instructions: buildInstructions(config.app, config.systemPrompt),
+          instructions: buildInstructions(config.app, config.systemPrompt, userContext),
           tools: SCREEN_TOOLS,
           onToolCall: (name, input) => {
             this.set({ state: 'thinking' });
@@ -337,7 +364,7 @@ export class VoiceAssistant {
 
       const { voice } = config;
       const agentModel = config.model;
-      const opts = { signal, maxSteps: config.maxSteps, app: config.app, systemPrompt: config.systemPrompt };
+      const opts = { signal, maxSteps: config.maxSteps, app: config.app, systemPrompt: config.systemPrompt, userContext };
       // The screen captured at the tap goes with the first model call; later ones capture afresh.
       let firstScreen: string | undefined = screen;
       // Continues the conversation when there is a clean one to continue, else starts one. A call
@@ -362,9 +389,10 @@ export class VoiceAssistant {
         this.set({ state: 'listening', transcript: '' });
         const typed = this.pendingText;
         this.pendingText = null;
-        const heard = (typed ?? (await this.listenOrType(voice, signal))).trim();
-        this.set({ transcript: heard });
-        return heard;
+        const heard = typed ? { text: typed } : await this.listenOrType(voice, signal);
+        const text = heard.text.trim();
+        this.set({ transcript: text });
+        return { ...heard, text };
       };
 
       // No fixed greeting: the model opens, from the screen and the conversation so far. If that
@@ -390,7 +418,8 @@ export class VoiceAssistant {
           if (!keepListening) break;
         }
         const listenedAt = Date.now();
-        const request = await listen();
+        const heard = await listen();
+        const request = heard.text;
         if (!request) {
           if (signal.aborted) break;
           if (keepOnSilence) {
@@ -411,7 +440,7 @@ export class VoiceAssistant {
         }
         this.set({ state: 'thinking' });
         // Later turns continue the same conversation, so "and one more" or "yes" make sense.
-        answer = await ask(request);
+        answer = await ask(requestWithAlternatives(heard));
         await this.progressSpeech;
         if (answer) {
           this.set({ state: 'speaking' });

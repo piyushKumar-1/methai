@@ -217,6 +217,25 @@ After every action the agent waits until the screen settles (no changes for a mo
 instead of a fixed delay, and the built-in `wait_for_screen` tool lets the model wait for data that
 arrives later (search results, prices). A snapshot is marked loading while a spinner shows.
 
+### Knowing the user
+
+Speech recognition mishears names ("to know my three office" for "Namma Yatri office"). Tell the
+agent who the user is and it resolves them, the way a person would:
+
+```tsx
+<ScreenContextProvider
+  assistant={{
+    voice, model, app,
+    // Read at the start of every session; keep it short (it goes into the system prompt).
+    userContext: () => `Saved places: Home: HSR Layout; Work: Namma Yatri office, Koramangala
+Recent trips: HSR Layout → Namma Yatri office (Auto); Koramangala → Airport (Cab)`,
+  }}
+>
+```
+
+The recognizer's other guesses go to the model with each request too (`HeardSpeech.alternatives`,
+filled in by `deviceVoice`), so it can pick the reading that makes sense.
+
 ### Ready-made UI
 
 `<AssistantOverlay />` is the whole on-screen part: a button docked to the screen edge and a bubble

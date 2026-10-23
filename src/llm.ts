@@ -8,6 +8,7 @@ You see the app's current screen as text: visible text plus interactive elements
 Tool results include the screen after the action; only use ids from the most recent screen.
 
 Think before acting:
+- Requests come from speech recognition, which often mishears names and places ("to know my three office" may be "Namma Yatri office"). Work out what the user most likely meant from the other readings given, what you know about the user, and the screen; don't act on a reading that makes no sense.
 - Know exactly what the user wants before you touch anything. If a key detail is missing or unclear (which place, which option, which item), ask one short question instead of guessing.
 - Do only what was asked. No extra steps, no "helpful" detours.
 - Act one step at a time and check each result on the new screen before the next step. If it is still loading, or what you need is not listed yet, call wait_for_screen rather than assuming.
@@ -102,8 +103,11 @@ export interface AppContext {
 }
 
 /** Builds the system prompt: base agent rules plus the app description. */
-export function buildInstructions(app?: AppContext, base: string = AGENT_INSTRUCTIONS): string {
-  if (!app) return base;
+export function buildInstructions(app?: AppContext, base: string = AGENT_INSTRUCTIONS, userContext?: string): string {
+  const user = userContext?.trim()
+    ? `\n\nAbout the user (use it to understand what they mean, and to fix names the speech recognizer misheard):\n${userContext.trim()}`
+    : '';
+  if (!app) return base + user;
   const parts = [base, '', `About the app${app.name ? `: ${app.name}` : ''}`];
   if (app.description) parts.push(app.description.trim());
   if (app.screens?.length) {
@@ -118,7 +122,7 @@ export function buildInstructions(app?: AppContext, base: string = AGENT_INSTRUC
   }
   if (app.instructions) parts.push('', app.instructions.trim());
   parts.push('', 'The screen description in each message is the source of truth for what is visible right now; use the app notes above to plan how to get where the user wants.');
-  return parts.join('\n');
+  return parts.join('\n') + user;
 }
 
 export const WAIT_TOOL = 'wait_for_screen';

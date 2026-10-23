@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import type { VoiceIO } from './assistant';
+import type { HeardSpeech, VoiceIO } from './assistant';
 import { toCaptionText } from './captions';
 import { isInterruption, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
 
@@ -67,6 +67,7 @@ export interface DeviceVoiceOptions {
 }
 
 export interface DeviceVoice extends VoiceIO {
+  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<HeardSpeech>;
   /** Locales that have an installed text-to-speech voice. */
   installedLocales(): Promise<string[]>;
 }
@@ -139,6 +140,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   interface Session {
     /** What was heard ('' for silence); rejects on a real recognizer failure. */
     result: Promise<string>;
+    /** The recognizer's other guesses for the latest words. */
+    alternatives(): string[];
     /** Where partials and mic levels go; can be set while the session runs. */
     attach(onPartial?: (text: string) => void, onLevel?: (level: number) => void): void;
     abort(reason: string): void;
@@ -149,6 +152,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     // A recognizer that died never answers stop/destroy, so don't wait for it forever.
     await Promise.race([teardown, sleep(600)]);
     let transcript = '';
+    let others: string[] = [];
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let partialTo: ((text: string) => void) | undefined;
@@ -178,6 +182,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     };
     const session: Session = {
       result,
+      alternatives: () => others,
       attach(onPartial, onLevel) {
         partialTo = onPartial;
         levelTo = onLevel;
@@ -192,6 +197,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       log(`${kind}: ${JSON.stringify(e.value ?? [])}`);
       if (!text) return;
       transcript = text;
+      others = (e.value ?? []).map(v => v.trim()).filter(v => v && v !== text);
       partialTo?.(transcript);
       onWords?.(transcript, session);
       stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
@@ -304,7 +310,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       // is a chance to miss a one-word "yes".
       const quietFor = Date.now() - spokeUntil;
       if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
-      if (signal.aborted) return '';
+      if (signal.aborted) return { text: '' };
       const session = await startSession('listen');
       session.attach(onPartial, onLevel);
       const onAbort = () => session.abort('aborted');
@@ -313,7 +319,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         const heard = await session.result;
         const request = stripEcho(heard, lastSpoken);
         if (request !== heard) log(`echo removed: ${JSON.stringify(heard)} → ${JSON.stringify(request)}`);
-        return request;
+        const alternatives = request ? session.alternatives().map(a => stripEcho(a, lastSpoken)).filter(Boolean) : [];
+        return alternatives.length ? { text: request, alternatives } : { text: request };
       } finally {
         signal.removeEventListener('abort', onAbort);
       }
