@@ -118,7 +118,7 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   const [update, greet] = ws.sent;
   expect(update.type).toBe('session.update');
   expect(update.session.audio.output.voice).toBe('alloy');
-  expect(update.session.tools.map((t: any) => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'run_screen_action', 'end_conversation']);
+  expect(update.session.tools.map((t: any) => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'scroll', 'run_screen_action', 'end_conversation']);
   expect(update.session.instructions).toContain('[btn_place_order] button "Place order"');
   expect(update.session.instructions).toContain('About the app: FreshCart\nGrocery delivery in 20 minutes.');
   expect(update.session.instructions).toContain('- Shop: Products and the cart (reach it via the Shop tab)');

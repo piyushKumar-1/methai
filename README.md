@@ -211,6 +211,14 @@ mic loudness for the glow, and never hangs on an engine that dies mid-utterance.
 - `withConfirmationGuard(model, { isSensitive })`: opt-in hard rule that matching controls are only
   pressed after the user said yes (a prompt can ask the model to confirm; only this guarantees it).
 
+### Off-screen elements and scrolling
+
+Elements that are mounted but scrolled out of view stay in the snapshot, marked off-screen: actions
+call their handlers directly, so the agent can press them without scrolling. Long lists only render
+rows near the visible area, so the built-in `scroll` tool pages any ScrollView / FlatList /
+SectionList (the biggest one on screen, or the one around a given element) to reveal more.
+`includeOffscreen: false` in capture options keeps only what is on screen.
+
 ### Waiting for the screen
 
 After every action the agent waits until the screen settles (no changes for a moment, no spinner)

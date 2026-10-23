@@ -11,6 +11,7 @@ Think before acting:
 - Requests come from speech recognition, which often mishears names and places ("to know my three office" may be "Namma Yatri office"). Work out what the user most likely meant from the other readings given, what you know about the user, and the screen; don't act on a reading that makes no sense.
 - Know exactly what the user wants before you touch anything. If a key detail is missing or unclear (which place, which option, which item), ask one short question instead of guessing.
 - Do only what was asked. No extra steps, no "helpful" detours.
+- Elements marked off-screen can be pressed directly. If what you need isn't listed at all, scroll to find it.
 - Act one step at a time and check each result on the new screen before the next step. If it is still loading, or what you need is not listed yet, call wait_for_screen rather than assuming.
 - In each step either ask or act, never both: a question goes in a reply with no tool calls, and then you wait for the answer.
 - Your final reply describes what is true now, after your actions. Never ask about something you have already done.
@@ -50,6 +51,7 @@ function describeElement(el: ScreenElement): string {
   let line = parts.join(' ');
   if (el.description) line += ` — ${el.description}`;
   if (el.disabled) line += ' [disabled]';
+  if (el.offscreen) line += ' [off-screen; press works without scrolling]';
   return line;
 }
 
@@ -128,6 +130,7 @@ export function buildInstructions(app?: AppContext, base: string = AGENT_INSTRUC
 }
 
 export const WAIT_TOOL = 'wait_for_screen';
+export const SCROLL_TOOL = 'scroll';
 
 /** Tool input as an object; `input` may be an object or a JSON string. */
 export function parseArgs(input: unknown): Record<string, any> | undefined {
@@ -188,6 +191,20 @@ export const SCREEN_TOOLS: ToolSpec[] = [
     schema: {
       type: 'object',
       properties: { seconds: { type: 'number', description: 'Longest to wait, 1–10. Default 5.' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: SCROLL_TOOL,
+    description:
+      'Scroll a list or page by about one screen to reveal more of it (long lists only include rows near what is visible). Elements marked off-screen do not need this: press them directly.',
+    schema: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', enum: ['down', 'up', 'right', 'left'], description: 'down/up for vertical lists, right/left for horizontal ones.' },
+        element_id: { type: 'string', description: 'Optional: any element inside the list to scroll. Default: the biggest list on screen.' },
+      },
+      required: ['direction'],
       additionalProperties: false,
     },
   },

@@ -149,7 +149,7 @@ test('tool calls round-trip and return the new screen', async () => {
   expect(res.content).toMatch(/^OK: press on btn_forgot_password/);
   expect(res.content).toContain('[btn_log_in] button "Log in" — Signs in with the email and password');
   expect(log).toEqual(['forgot']);
-  expect(anthropicTools().map(t => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'run_screen_action']);
+  expect(anthropicTools().map(t => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'scroll', 'run_screen_action']);
 });
 
 test('formatSnapshot', () => {

@@ -42,6 +42,8 @@ export interface ScreenElement {
 
   /** Window coordinates, present when the capture measured layout. */
   bounds?: Bounds;
+  /** Mounted but outside the window (scrolled away). It can still be pressed without scrolling. */
+  offscreen?: boolean;
 }
 
 export interface ScreenSnapshot {
@@ -61,6 +63,11 @@ export interface CaptureOptions {
    * and attach bounds. Default true for capture(); captureSync() never measures.
    */
   measure?: boolean;
+  /**
+   * Keep elements that are mounted but outside the window (scrolled away), marked offscreen.
+   * Default true: actions call handlers directly, so they work without scrolling.
+   */
+  includeOffscreen?: boolean;
   /** Include disabled elements (marked disabled: true). Default true. */
   includeDisabled?: boolean;
   /** Max number of static texts to return. Default 80. */

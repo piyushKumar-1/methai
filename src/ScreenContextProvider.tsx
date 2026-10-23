@@ -4,7 +4,8 @@ import { VoiceAssistant, type AssistantConfig, type AssistantStatus } from './as
 import { performAction } from './actions';
 import { extract, type Extraction } from './extract';
 import { currentRootOf, fiberOfInstance, type Fiber } from './fiber';
-import { formatSnapshot, parseArgs, toolCallToAction, WAIT_TOOL } from './llm';
+import { formatSnapshot, parseArgs, SCROLL_TOOL, toolCallToAction, WAIT_TOOL } from './llm';
+import { scrollScreen, type ScrollDirection } from './scroll';
 import { measureEntries } from './measure';
 import type { ActionResult, CaptureOptions, ScreenAction, ScreenSnapshot } from './types';
 
@@ -99,12 +100,19 @@ export class ScreenContextController {
     return this.extract(opts).snapshot;
   }
 
-  /** Capture with layout measurement: drops off-screen/zero-size elements and adds bounds. */
+  /**
+   * Capture with layout measurement: adds bounds, drops zero-size elements, and marks the ones
+   * outside the window as offscreen (or drops them with `includeOffscreen: false`).
+   */
   async capture(opts: CaptureOptions = {}): Promise<ScreenSnapshot> {
     const { snapshot, entries } = this.extract(opts);
     if (opts.measure === false) return snapshot;
-    const hidden = await measureEntries(entries.values());
-    return { ...snapshot, elements: snapshot.elements.filter(el => !hidden.has(el.id)) };
+    const { hidden, offscreen } = await measureEntries(entries.values());
+    const keepOffscreen = opts.includeOffscreen !== false;
+    const elements = snapshot.elements
+      .filter(el => !hidden.has(el.id) && (keepOffscreen || !offscreen.has(el.id)))
+      .map(el => (offscreen.has(el.id) ? { ...el, offscreen: true } : el));
+    return { ...snapshot, elements };
   }
 
   private signature(): { sig: string; loading: boolean } {
@@ -180,6 +188,15 @@ export class ScreenContextController {
       const secs = (r.waitedMs / 1000).toFixed(1);
       const head = r.settled ? `Screen updated (${secs}s).` : r.loading ? `Still loading after ${secs}s.` : r.changed ? `Still changing after ${secs}s.` : `Nothing changed in ${secs}s.`;
       return { isError: false, content: `${head}\n\nScreen now:\n${await this.describe(opts)}` };
+    }
+    if (name === SCROLL_TOOL) {
+      const args = parseArgs(input);
+      const direction: ScrollDirection = ['up', 'down', 'left', 'right'].includes(args?.direction) ? args!.direction : 'down';
+      const inside = typeof args?.element_id === 'string' ? this.extract().entries.get(args.element_id)?.fiber : undefined;
+      if (typeof args?.element_id === 'string' && !inside) return { isError: true, content: `No element "${args.element_id}" on screen.` };
+      const r = await scrollScreen(this.getRoot(), direction, inside);
+      if (r.ok) await this.waitForSettle({ quietMs: opts?.settleMs ?? 350, maxMs: opts?.maxSettleMs ?? 2000 });
+      return { isError: !r.ok, content: `${r.message}\n\nScreen now:\n${await this.describe(opts)}` };
     }
     const action = toolCallToAction(name, input);
     if ('error' in action) return { isError: true, content: action.error };

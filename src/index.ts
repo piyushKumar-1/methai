@@ -2,7 +2,7 @@ export { AIAction, AIIgnore, AIScreenAction } from './annotations';
 export type { AIActionProps, AIScreenActionProps } from './annotations';
 export { ScreenContextController, ScreenContextProvider, getScreenContext, useAssistant, useScreenContext } from './ScreenContextProvider';
 export type { ExecuteOptions, ScreenContextEvent, SettleOptions, SettleResult, VoicePhase, ScreenContextProviderProps, ToolCallResult, UseAssistant } from './ScreenContextProvider';
-export { AGENT_INSTRUCTIONS, SCREEN_TOOLS, WAIT_TOOL, buildInstructions, anthropicTools, formatSnapshot, isScreenTool, openAITools, toolCallToAction } from './llm';
+export { AGENT_INSTRUCTIONS, SCREEN_TOOLS, SCROLL_TOOL, WAIT_TOOL, buildInstructions, anthropicTools, formatSnapshot, isScreenTool, openAITools, toolCallToAction } from './llm';
 export type { AppContext, AppFlow, AppScreenInfo, JSONSchemaObject, ToolSpec } from './llm';
 export { runAgent, runAgentFollowUp } from './agent';
 export { openAIChatModel } from './openai';
@@ -27,3 +27,5 @@ export { withConfirmationGuard, withModelLogging, withModelTimeout } from './mod
 export type { ConfirmationGuardOptions } from './modelWrappers';
 export type { AssistantButtonProps } from './AssistantButton';
 export type * from './types';
+export { nextScrollOffset } from './scroll';
+export type { ScrollDirection } from './scroll';
