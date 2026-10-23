@@ -34,6 +34,11 @@ export interface SettleOptions {
   untilChanged?: boolean;
   /** A spinner that never stops (a "searching…" animation) stops counting after this long. Default 1500ms. */
   spinnerGraceMs?: number;
+  /**
+   * With `untilChanged`: stop waiting after this long if the screen hasn't moved at all and nothing
+   * is loading — it is already done, there's nothing to wait for. Default: wait the full `maxMs`.
+   */
+  idleGiveUpMs?: number;
 }
 
 export interface SettleResult {
@@ -124,7 +129,7 @@ export class ScreenContextController {
    * Waits for the screen to stop changing: React re-rendered, navigation finished animating, data
    * that loads after a tap arrived and spinners went away. Resolves early once it is quiet.
    */
-  async waitForSettle({ quietMs = 350, maxMs = 3000, untilChanged = false, spinnerGraceMs = 1500 }: SettleOptions = {}): Promise<SettleResult> {
+  async waitForSettle({ quietMs = 350, maxMs = 3000, untilChanged = false, spinnerGraceMs = 1500, idleGiveUpMs }: SettleOptions = {}): Promise<SettleResult> {
     const start = Date.now();
     const first = this.signature().sig;
     let last = first;
@@ -141,6 +146,9 @@ export class ScreenContextController {
       if (sig !== first) changed = true;
       const spinnerBlocks = loading && now - start < spinnerGraceMs;
       if (now - quietSince >= quietMs && !spinnerBlocks && (changed || !untilChanged)) {
+        return { changed, settled: true, loading, waitedMs: now - start };
+      }
+      if (idleGiveUpMs !== undefined && !changed && !loading && now - start >= idleGiveUpMs) {
         return { changed, settled: true, loading, waitedMs: now - start };
       }
       if (now - start >= maxMs) return { changed, settled: false, loading, waitedMs: now - start };
@@ -184,9 +192,10 @@ export class ScreenContextController {
     if (name === WAIT_TOOL) {
       const seconds = Number(parseArgs(input)?.seconds);
       const maxMs = Math.min(10, Math.max(1, Number.isFinite(seconds) ? seconds : 5)) * 1000;
-      const r = await this.waitForSettle({ quietMs: 600, maxMs, untilChanged: true });
+      // A still screen with no spinner after 1.5s is already loaded: don't burn the full wait.
+      const r = await this.waitForSettle({ quietMs: 600, maxMs, untilChanged: true, idleGiveUpMs: 1500 });
       const secs = (r.waitedMs / 1000).toFixed(1);
-      const head = r.settled ? `Screen updated (${secs}s).` : r.loading ? `Still loading after ${secs}s.` : r.changed ? `Still changing after ${secs}s.` : `Nothing changed in ${secs}s.`;
+      const head = r.settled && !r.changed ? `Nothing is loading; the screen is ready.` : r.settled ? `Screen updated (${secs}s).` : r.loading ? `Still loading after ${secs}s.` : r.changed ? `Still changing after ${secs}s.` : `Nothing changed in ${secs}s.`;
       return { isError: false, content: `${head}\n\nScreen now:\n${await this.describe(opts)}` };
     }
     if (name === SCROLL_TOOL) {

@@ -262,3 +262,12 @@ test('wait_for_screen returns as soon as the screen changes and settles', async 
   expect(Date.now() - started).toBeLessThan(2500);
   await act(async () => renderer.unmount());
 });
+
+test('wait_for_screen on a screen that is already loaded returns quickly instead of waiting it out', async () => {
+  const { renderer, controller } = await mountPrices();
+  const started = Date.now();
+  const res = await live(() => controller.executeToolCall('wait_for_screen', '{"seconds": 5}', { measure: false }));
+  expect(res.content).toMatch(/^Nothing is loading; the screen is ready\./);
+  expect(Date.now() - started).toBeLessThan(2500);
+  await act(async () => renderer.unmount());
+});
