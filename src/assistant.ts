@@ -148,6 +148,9 @@ export class VoiceAssistant {
   private conversation: { model: AgentModel; endedAt: number } | null = null;
   private abort: AbortController | null = null;
   private interruptHandler: (() => void) | null = null;
+  /** A typed request waiting for the next listening turn, and the turn listening right now. */
+  private pendingText: string | null = null;
+  private typedHandler: ((text: string) => void) | null = null;
   private listeners = new Set<(s: AssistantStatus) => void>();
 
   constructor(
@@ -191,6 +194,18 @@ export class VoiceAssistant {
     else this.cancel();
   }
 
+  /**
+   * A request typed instead of spoken. While listening it answers this turn; otherwise it waits
+   * for the next one, starting a session (without the greeting) if none is running.
+   */
+  submitText(text: string): void {
+    const request = text.trim();
+    if (!request) return;
+    if (this.typedHandler) return this.typedHandler(request);
+    this.pendingText = request;
+    if (!this.abort) void this.start();
+  }
+
   /** Stops the current spoken answer (the session continues and listens). */
   interrupt(): void {
     this.interruptHandler?.();
@@ -224,6 +239,29 @@ export class VoiceAssistant {
       this.interruptHandler = null;
       signal.removeEventListener('abort', onAbort);
     }
+  }
+
+  /** Listens for speech, unless a request is typed first (which stops the mic). */
+  private listenOrType(voice: VoiceIO, signal: AbortSignal): Promise<string> {
+    const mic = new AbortController();
+    const onAbort = () => mic.abort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    return new Promise<string>((resolve, reject) => {
+      this.typedHandler = text => {
+        mic.abort();
+        resolve(text);
+      };
+      voice
+        .listen(
+          mic.signal,
+          partial => this.set({ transcript: partial }),
+          level => this.controller.reportVoice('listening', level),
+        )
+        .then(resolve, reject);
+    }).finally(() => {
+      this.typedHandler = null;
+      signal.removeEventListener('abort', onAbort);
+    });
   }
 
   async start(): Promise<void> {
@@ -294,21 +332,19 @@ export class VoiceAssistant {
       };
       const listen = async () => {
         this.set({ state: 'listening', transcript: '' });
-        const heard = (
-          await voice.listen(
-            signal,
-            partial => this.set({ transcript: partial }),
-            level => this.controller.reportVoice('listening', level),
-          )
-        ).trim();
+        const typed = this.pendingText;
+        this.pendingText = null;
+        const heard = (typed ?? (await this.listenOrType(voice, signal))).trim();
         this.set({ transcript: heard });
         return heard;
       };
 
       // No fixed greeting: the model opens, from the screen and the conversation so far. If that
       // fails the session still goes on; it just listens without an opening line.
-      const opening =
-        greeting ??
+      // A session started by typing goes straight to the request.
+      const opening = this.pendingText
+        ? ''
+        : greeting ??
         (await ask(OPENING_REQUEST).catch(() => {
           if (signal.aborted) throw new Error('Aborted');
           return '';

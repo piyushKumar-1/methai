@@ -16,5 +16,8 @@ export { floatToPcm16Base64, pcm16Base64ToFloat, resample } from './pcm';
 export { AgentGlow } from './AgentGlow';
 export type { AgentGlowProps } from './AgentGlow';
 export { AssistantButton } from './AssistantButton';
+export { AssistantOverlay } from './AssistantOverlay';
+export type { AssistantOverlayProps, AssistantPosition, AssistantTheme } from './AssistantOverlay';
+export { toCaptionText, typedSoFar } from './captions';
 export type { AssistantButtonProps } from './AssistantButton';
 export type * from './types';

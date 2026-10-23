@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, Easing, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { AIIgnore } from './annotations';
+import { background, rgba } from './style';
 import type { ScreenContextController, VoicePhase } from './ScreenContextProvider';
 
 export interface AgentGlowProps {
@@ -74,20 +75,6 @@ function useLoop(durationMs: number, enabled: boolean) {
     return () => loop.stop();
   }, [durationMs, enabled, value]);
   return value;
-}
-
-/**
- * CSS gradient as a background. React Native ≤0.8x only reads it from `experimental_backgroundImage`
- * (an unknown `backgroundImage` key is dropped silently); newer versions read `backgroundImage`.
- */
-function background(image: string): Record<string, string> {
-  return { backgroundImage: image, experimental_backgroundImage: image };
-}
-
-function rgba(hex: string, alpha: number): string {
-  const h = hex.replace('#', '');
-  const n = parseInt(h.length === 3 ? h.replace(/./g, c => c + c) : h.slice(0, 6), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
 type InnerProps = Omit<AgentGlowProps, 'variant'> & { reduceMotion: boolean };

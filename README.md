@@ -173,6 +173,26 @@ import { AssistantButton, ScreenContextProvider, useAssistant } from 'react-nati
 const { state, transcript, toggle } = useAssistant();   // state: idle | greeting | listening | thinking | speaking
 ```
 
+### Ready-made UI
+
+`<AssistantOverlay />` is the whole on-screen part: a button docked to the screen edge and a bubble
+beside it with what is being said — the user's words while it listens, the reply typed out while it
+speaks, gone once it stops talking. Theme and place it to match your app:
+
+```tsx
+<ScreenContextProvider assistant={{ voice, model }} glow={{ colors: [brand, brand2] }}>
+  <App />
+  <AssistantOverlay
+    theme={{ background: '#111', foreground: '#FCC32C', accent: '#FCC32C' }}   // or background: [from, to]
+    position={{ side: 'right', vertical: 0.42 }}
+    icon={<MyMicIcon />}            // optional; a built-in mic otherwise
+    typeToAsk={__DEV__}             // long-press to type a request (emulators have no speech engines)
+  />
+</ScreenContextProvider>
+```
+
+`useAssistant().submitText(text)` sends a typed request from your own UI the same way.
+
 ### Describing your app (system prompt)
 
 Tell the agent what the app is, which screens exist and how common tasks are done. It then knows

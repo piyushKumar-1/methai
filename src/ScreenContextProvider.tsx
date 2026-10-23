@@ -192,6 +192,8 @@ export interface UseAssistant extends AssistantStatus {
   interrupt: () => void;
   start: () => Promise<void>;
   cancel: () => void;
+  /** A request typed instead of spoken; starts a session if none is running. */
+  submitText: (text: string) => void;
 }
 
 export function useAssistant(): UseAssistant {
@@ -207,5 +209,6 @@ export function useAssistant(): UseAssistant {
     interrupt: () => assistant.interrupt(),
     start: () => assistant.start(),
     cancel: () => assistant.cancel(),
+    submitText: (text: string) => assistant.submitText(text),
   };
 }
