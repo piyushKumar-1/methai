@@ -145,7 +145,32 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     /** Where partials and mic levels go; can be set while the session runs. */
     attach(onPartial?: (text: string) => void, onLevel?: (level: number) => void): void;
     abort(reason: string): void;
+    /** Still running (not ended or aborted). */
+    alive(): boolean;
+    /**
+     * The assistant stopped talking: from here on this session is the user's turn. What it heard
+     * so far (the reply's own echo) is dropped, and it waits the full no-speech time again.
+     */
+    handOver(): void;
   }
+
+  // The session that was listening while the assistant spoke, carried into the next listen() so
+  // the mic never closes between the reply and the user's answer.
+  let carried: Session | null = null;
+
+  /** `text` without the words already heard before a hand-over (the reply's echo). */
+  const afterPrefix = (text: string, prefix: string[]): string => {
+    const tokens = text.trim().split(/\s+/);
+    let n = 0;
+    while (n < prefix.length && n < tokens.length && tokens[n].toLowerCase().replace(/[^\p{L}\p{N}]/gu, '') === prefix[n]) n++;
+    return tokens.slice(n).join(' ').trim();
+  };
+  const tokensOf = (text: string) =>
+    text
+      .trim()
+      .split(/\s+/)
+      .map(t => t.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''))
+      .filter(Boolean);
 
   /** One recognizer session, started once the previous one has shut down. */
   const startSession = async (label: string, onWords?: (text: string, session: Session) => void): Promise<Session> => {
@@ -154,6 +179,9 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     let transcript = '';
     let others: string[] = [];
     let settled = false;
+    let echo: string[] = [];
+    let name = label;
+    let wordsTo = onWords;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let partialTo: ((text: string) => void) | undefined;
     let levelTo: ((level: number) => void) | undefined;
@@ -166,7 +194,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       settled = true;
       clearTimeout(timer);
       rec.removeAllListeners();
-      log(`${label} ended (${reason}) after ${Date.now() - startedAt}ms: ${error ? `error ${error.message}` : JSON.stringify(transcript)}`);
+      log(`${name} ended (${reason}) after ${Date.now() - startedAt}ms: ${error ? `error ${error.message}` : JSON.stringify(transcript)}`);
       // Settle first: a recognizer that died never answers stop/destroy.
       if (error) settle.reject(error);
       else settle.resolve(transcript.trim());
@@ -189,17 +217,30 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         if (transcript) onPartial?.(transcript);
       },
       abort: reason => finish(undefined, reason),
+      alive: () => !settled,
+      handOver() {
+        echo = tokensOf(transcript);
+        log(`${name} handed over to listen${transcript ? ` (dropping echo ${JSON.stringify(transcript)})` : ''}`);
+        name = 'listen (carried)';
+        transcript = '';
+        others = [];
+        wordsTo = undefined;
+        stopAfter(noSpeechTimeoutMs, 'nothing said');
+      },
     };
     const onText = (kind: string) => (e: RecognizerResults) => {
       // Some recognizers send an empty final result after good partials; never let it wipe what
       // was already heard.
-      const text = e.value?.find(candidate => candidate.trim().length > 0);
+      const raw = e.value?.find(candidate => candidate.trim().length > 0);
       log(`${kind}: ${JSON.stringify(e.value ?? [])}`);
+      // After a hand-over the recognizer keeps reporting the echo it heard first; only what
+      // follows it is the user's.
+      const text = raw === undefined ? undefined : afterPrefix(raw, echo);
       if (!text) return;
       transcript = text;
-      others = (e.value ?? []).map(v => v.trim()).filter(v => v && v !== text);
+      others = (e.value ?? []).map(v => afterPrefix(v, echo)).filter(v => v && v !== text);
       partialTo?.(transcript);
-      onWords?.(transcript, session);
+      wordsTo?.(transcript, session);
       stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
     };
     rec.onSpeechPartialResults = onText('partial');
@@ -221,7 +262,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
 
   /**
    * Keeps a recognizer running while `spoken` is being said and calls `interrupt` when the user
-   * says a stop word. Nothing heard here becomes a request: it is mostly the reply's own echo.
+   * says a stop word. What it heard before the hand-over is never part of a request: it is mostly
+   * the reply's own echo.
    */
   const watchForInterruption = (spoken: string, interrupt: () => void) => {
     let done = false;
@@ -229,11 +271,11 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     const loop = (async () => {
       if (opts.requestMicPermission && !(await opts.requestMicPermission())) return;
       while (!done) {
-        const session = await startSession('interrupt watch', (text, s) => {
+        const session = await startSession('interrupt watch', text => {
           if (done || !isInterruption(text, spoken)) return;
           done = true;
           log(`interrupted: ${JSON.stringify(text)}`);
-          s.abort('interrupted');
+          // The session keeps running: speak() hands it over, so "stop, take me home" is heard whole.
           interrupt();
         });
         if (done) {
@@ -245,10 +287,16 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       }
     })();
     return {
-      async stop() {
+      /** Ends the watch. With `handOver`, a still-running session is returned for the user's turn. */
+      async stop(handOver: boolean): Promise<Session | null> {
         done = true;
+        if (handOver && current?.alive()) {
+          current.handOver();
+          return current;
+        }
         current?.abort('done speaking');
         await loop;
+        return null;
       },
     };
   };
@@ -269,7 +317,9 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       lastSpoken = say;
       if (!(await ensureTts())) return;
       await prepareVoice(locale());
-      let watch: { stop(): Promise<void> } | undefined;
+      carried?.abort('stale');
+      carried = null;
+      let watch: ReturnType<typeof watchForInterruption> | undefined;
       await new Promise<void>(resolve => {
         const subscriptions = TTS_END_EVENTS.map(event => tts.addListener(event, () => settle()));
         const settle = () => {
@@ -301,17 +351,26 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         }
         if (bargeIn) watch = watchForInterruption(say, stopSpeaking);
       });
-      await watch?.stop();
+      // Finished (or cut off by a stop word): keep the mic that was already open for the user's
+      // answer, so their first words aren't lost while a new session starts.
+      carried = (await watch?.stop(!signal.aborted)) ?? null;
     },
 
     async listen(signal, onPartial, onLevel) {
-      if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
-      // Only right after speaking: between silent listening turns every millisecond the mic is off
-      // is a chance to miss a one-word "yes".
-      const quietFor = Date.now() - spokeUntil;
-      if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
-      if (signal.aborted) return { text: '' };
-      const session = await startSession('listen');
+      const handed = carried?.alive() ? carried : null;
+      carried = null;
+      if (!handed) {
+        if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
+        // Only right after speaking: between silent listening turns every millisecond the mic is
+        // off is a chance to miss a one-word "yes".
+        const quietFor = Date.now() - spokeUntil;
+        if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
+      }
+      if (signal.aborted) {
+        handed?.abort('aborted');
+        return { text: '' };
+      }
+      const session = handed ?? (await startSession('listen'));
       session.attach(onPartial, onLevel);
       const onAbort = () => session.abort('aborted');
       signal.addEventListener('abort', onAbort, { once: true });

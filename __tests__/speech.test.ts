@@ -163,7 +163,7 @@ describe('deviceVoice', () => {
     expect((await heard).text).toBe('to the airport');
   });
 
-  test('saying "stop" while it talks cuts it off; its own echo does not, and nothing heard becomes a request', async () => {
+  test('saying "stop" while it talks cuts it off; its own echo does not, and the same mic carries on', async () => {
     const rec = fakeRecognizer();
     const stop = jest.fn();
     const handlers: Record<string, () => void> = {};
@@ -187,10 +187,24 @@ describe('deviceVoice', () => {
     expect(stop).toHaveBeenCalled();
     const next = io.listen(signal);
     await new Promise(r => setTimeout(r, 10));
-    expect(rec.start).toHaveBeenCalledTimes(2); // a fresh session for the user's request
-    rec.emit('partial', ['go to Forum mall']);
+    rec.emit('partial', ['your destination is now next is called stop go to Forum mall']);
     rec.error('7');
     expect((await next).text).toBe('go to Forum mall');
+    expect(rec.start).toHaveBeenCalledTimes(1); // no restart: nothing lost in between
+  });
+
+  test('when it finishes talking, the open mic hands straight over to the user', async () => {
+    const rec = fakeRecognizer();
+    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
+    const speaking = io.speak('Where would you like to go?', signal);
+    await new Promise(r => setTimeout(r, 1));
+    rec.emit('partial', ['where would you']); // echo while speaking
+    await speaking;
+    const next = io.listen(signal);
+    rec.emit('partial', ['where would you yes']);
+    rec.error('7');
+    expect((await next).text).toBe('yes');
+    expect(rec.start).toHaveBeenCalledTimes(1);
   });
 
   test("the recognizer's other guesses come back as alternatives", async () => {
