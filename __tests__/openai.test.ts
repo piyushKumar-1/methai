@@ -43,3 +43,25 @@ test('when every model fails, the last error is reported', async () => {
   await expect(model.start('hi', 's', signal, 'r')).rejects.toThrow('Model request failed (503): overloaded');
   expect(modelsAsked()).toEqual(['a', 'b']);
 });
+
+test('a model that takes too long is dropped for the next one; the last one gets all the time it needs', async () => {
+  fetchMock.mockImplementationOnce(
+    (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('Aborted')))),
+  );
+  fetchMock.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(reply('Hi')), 80)));
+  const model = openAIChatModel({ endpoint: '/chat', model: 'slow', fallbackModels: ['fast'], attemptTimeoutMs: 30 });
+  expect((await model.start('hi', 's', signal, 'r')).text).toBe('Hi'); // 80ms > 30ms, but it is the last
+  expect(modelsAsked()).toEqual(['slow', 'fast']);
+});
+
+test('closing the assistant aborts the call without trying fallbacks', async () => {
+  const controller = new AbortController();
+  fetchMock.mockImplementation(
+    (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('Aborted')))),
+  );
+  const model = openAIChatModel({ endpoint: '/chat', model: 'a', fallbackModels: ['b'], attemptTimeoutMs: 1000 });
+  const call = model.start('hi', 's', controller.signal, 'r');
+  controller.abort();
+  await expect(call).rejects.toThrow('Aborted');
+  expect(modelsAsked()).toEqual(['a']);
+});

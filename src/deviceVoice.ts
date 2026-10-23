@@ -62,6 +62,10 @@ export interface DeviceVoiceOptions {
    * then listen to them afresh. Default true.
    */
   bargeIn?: boolean;
+  /**
+   * Passed to the recognizer's `start` each time, e.g. engine-specific flags. Default none.
+   */
+  recognizerOptions?: Record<string, unknown>;
   /** Step-by-step trace (listen started, partials, why it ended, errors), for debugging. */
   log?: (message: string) => void;
 }
@@ -217,7 +221,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     };
     stopAfter(noSpeechTimeoutMs, 'nothing said');
     log(`${label} started`);
-    rec.start(locale()).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
+    (opts.recognizerOptions ? rec.start(locale(), opts.recognizerOptions) : rec.start(locale())).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
     return session;
   };
 

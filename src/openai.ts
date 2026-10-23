@@ -15,6 +15,11 @@ export interface OpenAIChatModelOptions {
   fallbackModels?: string[];
   /** How long a failing model is skipped. Default 30s. */
   cooldownMs?: number;
+  /**
+   * Gives up on one model after this long and tries the next (an overloaded gateway can take a
+   * minute to answer). Only applies while there is a fallback left. Default: no limit.
+   */
+  attemptTimeoutMs?: number;
   /** Told when a call moves on to a fallback model, for debugging. */
   log?: (message: string) => void;
   headers?: Record<string, string>;
@@ -40,20 +45,36 @@ export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
   // When each model may be tried again after failing.
   const coolingUntil = new Map<string, number>();
 
-  async function request(model: string, signal: AbortSignal) {
+  async function request(model: string, signal: AbortSignal, timeoutMs: number | undefined) {
+    // Its own abort, so a slow attempt can be dropped without ending the whole call.
+    const attempt = new AbortController();
+    const cancel = () => attempt.abort();
+    signal.addEventListener('abort', cancel, { once: true });
+    let timedOut = false;
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            attempt.abort();
+          }, timeoutMs);
     let res: Response;
+    let json: any;
     try {
       res = await fetch(opts.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...opts.headers },
         body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', ...opts.extraBody }),
-        signal,
+        signal: attempt.signal,
       });
+      json = await res.json().catch(() => null);
     } catch (err) {
       if (signal.aborted) throw err;
-      throw new RetryableModelError(`Model request failed: ${String(err)}`);
+      throw new RetryableModelError(timedOut ? `Model request failed: ${model} gave no answer in ${timeoutMs! / 1000}s` : `Model request failed: ${String(err)}`);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', cancel);
     }
-    const json = await res.json().catch(() => null);
     if (!res.ok || !json?.choices?.[0]) {
       const message = `Model request failed (${res.status}): ${json?.error?.message ?? JSON.stringify(json)?.slice(0, 200)}`;
       throw isRetryableStatus(res.status) ? new RetryableModelError(message) : new Error(message);
@@ -69,7 +90,7 @@ export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
     let json: any;
     for (let i = 0; ; i++) {
       try {
-        json = await request(order[i]!, signal);
+        json = await request(order[i]!, signal, i < order.length - 1 ? opts.attemptTimeoutMs : undefined);
         coolingUntil.delete(order[i]!);
         break;
       } catch (err) {
