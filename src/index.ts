@@ -21,7 +21,7 @@ export type { AssistantOverlayProps, AssistantPosition, AssistantTheme } from '.
 export { toCaptionText, typedSoFar } from './captions';
 export { deviceVoice } from './deviceVoice';
 export type { DeviceVoice, DeviceVoiceOptions, RecognizerResults, SpeechRecognizerModule, TextToSpeechModule } from './deviceVoice';
-export { baseLanguage, canSpeak, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho } from './speech';
+export { baseLanguage, canSpeak, isBargeIn, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho } from './speech';
 export type { TtsVoiceInfo } from './speech';
 export { withConfirmationGuard, withModelLogging, withModelTimeout } from './modelWrappers';
 export type { ConfirmationGuardOptions } from './modelWrappers';

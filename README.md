@@ -196,7 +196,9 @@ const voice = deviceVoice({
 });
 ```
 
-It picks the most natural installed voice for the language, removes its own words if the mic hears
+You can talk over it: it keeps listening while it speaks, stops as soon as it hears you (your words,
+not its own voice from the speaker), and treats what you said as the next request (`bargeIn`,
+default true). It picks the most natural installed voice for the language, removes its own words if the mic hears
 them from the loudspeaker, keeps one-word answers that the recognizer reports as "no match", reports
 mic loudness for the glow, and never hangs on an engine that dies mid-utterance. The helpers it uses
 (`pickBestVoice`, `stripEcho`, `micLevelFromRms`, …) are exported for your own adapters.

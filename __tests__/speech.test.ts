@@ -1,4 +1,4 @@
-import { canSpeak, deviceVoice, isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type RecognizerResults, type SpeechRecognizerModule, type TextToSpeechModule } from '../src';
+import { canSpeak, deviceVoice, isBargeIn, isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type RecognizerResults, type SpeechRecognizerModule, type TextToSpeechModule } from '../src';
 
 const voice = (id: string, language: string, quality = 300, extra = {}) => ({
   id,
@@ -44,6 +44,23 @@ describe('stripEcho', () => {
     expect(stripEcho(' go to the airport ', greeting)).toBe('go to the airport');
     expect(stripEcho('book an auto', undefined)).toBe('book an auto');
     expect(stripEcho('', greeting)).toBe('');
+  });
+});
+
+describe('barge-in', () => {
+  const spoken = 'Your auto is 4 minutes away. The fare is 120 rupees.';
+  test("the assistant's own voice coming back is not the user", () => {
+    expect(isBargeIn('your auto is 4 minutes', spoken)).toBe(false);
+    expect(isBargeIn('the fair is 120 rupees', spoken)).toBe(false); // one misheard word
+  });
+  test('new words or an interrupting word are', () => {
+    expect(isBargeIn('book a cab instead', spoken)).toBe(true);
+    expect(isBargeIn('stop', spoken)).toBe(true);
+    expect(isBargeIn('minutes away wait', spoken)).toBe(true);
+  });
+  test('echo from anywhere in the reply is stripped from a barge-in', () => {
+    expect(stripEcho('4 minutes away book a cab instead', spoken, { anywhere: true })).toBe('book a cab instead');
+    expect(stripEcho('4 minutes away book a cab instead', spoken)).toBe('4 minutes away book a cab instead');
   });
 });
 
@@ -147,5 +164,34 @@ describe('deviceVoice', () => {
     rec.emit('partial', ['would you like to go to the airport']);
     rec.error('7');
     expect(await heard).toBe('to the airport');
+  });
+
+  test('talking over the assistant stops it, and what was said becomes the next request', async () => {
+    const rec = fakeRecognizer();
+    const stop = jest.fn(async () => {});
+    const handlers: Record<string, () => void> = {};
+    const slowTts: TextToSpeechModule = {
+      ...tts,
+      stop: () => {
+        stop();
+        handlers['tts-cancel']?.();
+        return Promise.resolve();
+      },
+      addListener: (event, handler) => ((handlers[event] = handler), { remove: () => {} }), // never finishes on its own
+    };
+    const io = deviceVoice({ recognizer: rec, tts: slowTts, locale: () => 'en-IN', micOpenDelayMs: 0 });
+    const speaking = io.speak('Your auto is 4 minutes away.', signal);
+    await new Promise(r => setTimeout(r, 10));
+    expect(rec.start).toHaveBeenCalledTimes(1); // listening while it speaks
+    rec.emit('partial', ['your auto is']); // its own voice: keeps talking
+    expect(stop).not.toHaveBeenCalled();
+    rec.emit('partial', ['your auto is book a cab']);
+    await speaking;
+    expect(stop).toHaveBeenCalled();
+    const next = io.listen(signal);
+    rec.emit('partial', ['your auto is book a cab instead']);
+    rec.error('7');
+    expect(await next).toBe('book a cab instead');
+    expect(rec.start).toHaveBeenCalledTimes(1); // the same session carried on
   });
 });

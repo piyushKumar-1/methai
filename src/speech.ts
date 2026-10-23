@@ -94,12 +94,30 @@ const words = (text: string): string[] =>
  * Only a leading run of 3+ words that is the *end* of `spoken` counts as echo, so a user who
  * repeats its words ("book it" after "Shall I book it?") is never cut off.
  */
-export function stripEcho(heard: string, spoken: string | null | undefined): string {
+export function stripEcho(heard: string, spoken: string | null | undefined, { anywhere = false }: { anywhere?: boolean } = {}): string {
   const said = words(spoken ?? '');
+  const saidText = ` ${said.join(' ')} `;
   const heardWords = words(heard);
   let echoed = 0;
-  for (let n = MIN_ECHO_WORDS; n <= Math.min(said.length, heardWords.length); n++) {
-    if (said.slice(said.length - n).join(' ') === heardWords.slice(0, n).join(' ')) echoed = n;
+  // `anywhere`: the user talked over the assistant, so the echo can come from any part of what it
+  // was saying, not just the end. Two words are enough there.
+  const min = anywhere ? 2 : MIN_ECHO_WORDS;
+  for (let n = min; n <= Math.min(said.length, heardWords.length); n++) {
+    const run = heardWords.slice(0, n).join(' ');
+    if (anywhere ? saidText.includes(` ${run} `) : said.slice(said.length - n).join(' ') === run) echoed = n;
   }
   return echoed > 0 ? heardWords.slice(echoed).join(' ') : heard.trim();
+}
+
+const INTERRUPT_WORDS = new Set(['stop', 'wait', 'no', 'hold', 'hey', 'cancel', 'yes', 'yeah', 'ok', 'okay', 'sorry', 'excuse', 'listen']);
+
+/**
+ * Whether `heard` (picked up while the assistant was speaking `spoken`) is the user talking rather
+ * than the assistant's own voice coming back from the speaker: two or more words it isn't saying,
+ * or one interrupting word ("stop", "wait", "no", "yes", "hey"…). A single misheard echo word isn't enough.
+ */
+export function isBargeIn(heard: string, spoken: string): boolean {
+  const said = new Set(words(spoken));
+  const novel = words(heard).filter(w => !said.has(w));
+  return novel.length >= 2 || novel.some(w => INTERRUPT_WORDS.has(w));
 }

@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import type { VoiceIO } from './assistant';
 import { toCaptionText } from './captions';
-import { isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
+import { isBargeIn, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
 
 /** Results event from the speech recognizer: best guess first. */
 export interface RecognizerResults {
@@ -57,6 +57,11 @@ export interface DeviceVoiceOptions {
   noSpeechTimeoutMs?: number;
   /** Pause after speaking before the mic opens, so the loudspeaker's tail isn't heard. Default 150ms. */
   micOpenDelayMs?: number;
+  /**
+   * Listen while speaking, and stop talking as soon as the user starts (their words, not the
+   * assistant's own voice from the speaker). What they say becomes the next request. Default true.
+   */
+  bargeIn?: boolean;
   /** Step-by-step trace (listen started, partials, why it ended, errors), for debugging. */
   log?: (message: string) => void;
 }
@@ -89,6 +94,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   const endOfSpeechMs = opts.endOfSpeechMs ?? 900;
   const noSpeechTimeoutMs = opts.noSpeechTimeoutMs ?? 8000;
   const micOpenDelayMs = opts.micOpenDelayMs ?? 150;
+  const bargeIn = opts.bargeIn ?? true;
 
   let ttsReady: Promise<boolean> | null = null;
   let preparedLocale: string | undefined;
@@ -130,6 +136,122 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     }
   };
 
+  interface Session {
+    /** What was heard ('' for silence); rejects on a real recognizer failure. */
+    result: Promise<string>;
+    /** Where partials and mic levels go; can be set while the session runs. */
+    attach(onPartial?: (text: string) => void, onLevel?: (level: number) => void): void;
+    abort(reason: string): void;
+  }
+
+  // The session in which the user talked over the assistant; the next listen() carries it on.
+  let barged: Session | null = null;
+
+  /** One recognizer session, started once the previous one has shut down. */
+  const startSession = async (label: string, onWords?: (text: string, session: Session) => void): Promise<Session> => {
+    // A recognizer that died never answers stop/destroy, so don't wait for it forever.
+    await Promise.race([teardown, sleep(600)]);
+    let transcript = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let partialTo: ((text: string) => void) | undefined;
+    let levelTo: ((level: number) => void) | undefined;
+    let settle!: { resolve: (text: string) => void; reject: (error: Error) => void };
+    const result = new Promise<string>((resolve, reject) => (settle = { resolve, reject }));
+    const startedAt = Date.now();
+
+    const finish = (error: Error | undefined, reason: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rec.removeAllListeners();
+      log(`${label} ended (${reason}) after ${Date.now() - startedAt}ms: ${error ? `error ${error.message}` : JSON.stringify(transcript)}`);
+      // Settle first: a recognizer that died never answers stop/destroy.
+      if (error) settle.reject(error);
+      else settle.resolve(transcript.trim());
+      teardown = rec
+        .stop()
+        .then(() => rec.destroy())
+        .catch(() => {});
+    };
+    // iOS never reports end of speech on its own, so stop on silence after the last result.
+    const stopAfter = (ms: number, reason: string) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(undefined, reason), ms);
+    };
+    const session: Session = {
+      result,
+      attach(onPartial, onLevel) {
+        partialTo = onPartial;
+        levelTo = onLevel;
+        if (transcript) onPartial?.(transcript);
+      },
+      abort: reason => finish(undefined, reason),
+    };
+    const onText = (kind: string) => (e: RecognizerResults) => {
+      // Some recognizers send an empty final result after good partials; never let it wipe what
+      // was already heard.
+      const text = e.value?.find(candidate => candidate.trim().length > 0);
+      log(`${kind}: ${JSON.stringify(e.value ?? [])}`);
+      if (!text) return;
+      transcript = text;
+      partialTo?.(transcript);
+      onWords?.(transcript, session);
+      stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
+    };
+    rec.onSpeechPartialResults = onText('partial');
+    rec.onSpeechResults = onText('final');
+    rec.onSpeechEnd = () => stopAfter(300, 'speech end');
+    rec.onSpeechVolumeChanged = e => levelTo?.(micLevelFromRms(e.value));
+    // "No match" / speech timeout just mean silence; transient errors too (the caller listens
+    // again). Only real failures are errors.
+    rec.onSpeechError = e => {
+      const detail = `recognizer error ${e.error?.code ?? '?'}/${e.error?.message ?? ''}`;
+      if (transcript || isNoSpeechError(e.error?.code, e.error?.message) || isTransientSpeechError(e.error?.code)) finish(undefined, detail);
+      else finish(new Error(e.error?.message ?? 'Speech recognition failed'), detail);
+    };
+    stopAfter(noSpeechTimeoutMs, 'nothing said');
+    log(`${label} started`);
+    rec.start(locale()).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
+    return session;
+  };
+
+  /**
+   * Keeps a recognizer running while `spoken` is being said; when it hears the user (not the
+   * echo of `spoken`), calls `interrupt` and leaves that session running for the next listen().
+   */
+  const watchForBargeIn = (spoken: string, interrupt: () => void) => {
+    let done = false;
+    let current: Session | null = null;
+    const loop = (async () => {
+      if (opts.requestMicPermission && !(await opts.requestMicPermission())) return;
+      while (!done) {
+        const session = await startSession('barge-in watch', (text, s) => {
+          if (done || !isBargeIn(text, spoken)) return;
+          done = true;
+          barged = s;
+          log(`barge-in: ${JSON.stringify(text)}`);
+          interrupt();
+        });
+        if (done && barged !== session) {
+          session.abort('done speaking');
+          return;
+        }
+        current = session;
+        await session.result.catch(() => '');
+        if (barged === session) return;
+      }
+    })();
+    return {
+      async stop() {
+        if (barged) return;
+        done = true;
+        current?.abort('done speaking');
+        await loop;
+      },
+    };
+  };
+
   return {
     async installedLocales() {
       if (!(await ensureTts())) return [];
@@ -143,31 +265,35 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     async speak(text, signal) {
       const say = speakable(text);
       if (signal.aborted || !say) return;
+      // A barge-in nobody picked up (the conversation ended) must not leak into a later turn.
+      barged?.abort('stale');
+      barged = null;
       lastSpoken = say;
       if (!(await ensureTts())) return;
       await prepareVoice(locale());
+      let watch: { stop(): Promise<void> } | undefined;
       await new Promise<void>(resolve => {
         const subscriptions = TTS_END_EVENTS.map(event => tts.addListener(event, () => settle()));
         const settle = () => {
           clearTimeout(timeout);
           subscriptions.forEach(s => s.remove());
-          signal.removeEventListener('abort', onAbort);
+          signal.removeEventListener('abort', stopSpeaking);
           spokeUntil = Date.now();
           resolve();
         };
-        const onAbort = () => {
+        const stopSpeaking = () => {
           void Promise.resolve(tts.stop()).catch(() => {});
           settle();
         };
-        signal.addEventListener('abort', onAbort, { once: true });
+        signal.addEventListener('abort', stopSpeaking, { once: true });
         // If the engine dies mid-utterance no finish event ever comes; move on instead of hanging.
         const timeout = setTimeout(() => {
           log('TTS finish event never arrived');
-          onAbort();
+          stopSpeaking();
         }, speechTimeoutMs(say));
         const fail = (err: unknown) => {
           log(`TTS speak failed: ${String(err)}`);
-          onAbort();
+          stopSpeaking();
         };
         try {
           // Android returns a promise that rejects, e.g. "Language data is missing".
@@ -175,77 +301,38 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         } catch (err) {
           fail(err);
         }
+        if (bargeIn) watch = watchForBargeIn(say, stopSpeaking);
       });
+      await watch?.stop();
     },
 
     async listen(signal, onPartial, onLevel) {
-      if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
-      // Only right after speaking: between silent listening turns every millisecond the mic is off
-      // is a chance to miss a one-word "yes".
-      const quietFor = Date.now() - spokeUntil;
-      if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
-      // A recognizer that died never answers stop/destroy, so don't wait for it forever.
-      await Promise.race([teardown, sleep(600)]);
-      if (signal.aborted) return '';
-
-      const heard = await new Promise<string>((resolve, reject) => {
-        let transcript = '';
-        let settled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const startedAt = Date.now();
-
-        const finish = (error: Error | undefined, reason: string) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          signal.removeEventListener('abort', onAbort);
-          rec.removeAllListeners();
-          log(`listen ended (${reason}) after ${Date.now() - startedAt}ms: ${error ? `error ${error.message}` : JSON.stringify(transcript)}`);
-          // Settle first: a recognizer that died never answers stop/destroy, and awaiting them
-          // would leave the assistant stuck listening.
-          if (error) reject(error);
-          else resolve(transcript.trim());
-          teardown = rec
-            .stop()
-            .then(() => rec.destroy())
-            .catch(() => {});
-        };
-        // iOS never reports end of speech on its own, so stop on silence after the last result.
-        const stopAfter = (ms: number, reason: string) => {
-          clearTimeout(timer);
-          timer = setTimeout(() => finish(undefined, reason), ms);
-        };
-        const onAbort = () => finish(undefined, 'aborted');
-        const onText = (kind: string) => (e: RecognizerResults) => {
-          // Some recognizers send an empty final result after good partials; never let it wipe
-          // what was already heard.
-          const text = e.value?.find(candidate => candidate.trim().length > 0);
-          log(`${kind}: ${JSON.stringify(e.value ?? [])}`);
-          if (!text) return;
-          transcript = text;
-          onPartial?.(transcript);
-          stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
-        };
-
-        signal.addEventListener('abort', onAbort, { once: true });
-        rec.onSpeechPartialResults = onText('partial');
-        rec.onSpeechResults = onText('final');
-        rec.onSpeechEnd = () => stopAfter(300, 'speech end');
-        rec.onSpeechVolumeChanged = e => onLevel?.(micLevelFromRms(e.value));
-        // "No match" / speech timeout just mean silence; only real failures are errors.
-        rec.onSpeechError = e => {
-          const detail = `recognizer error ${e.error?.code ?? '?'}/${e.error?.message ?? ''}`;
-          // Transient errors count as "nothing heard": the conversation listens again.
-          if (transcript || isNoSpeechError(e.error?.code, e.error?.message) || isTransientSpeechError(e.error?.code)) finish(undefined, detail);
-          else finish(new Error(e.error?.message ?? 'Speech recognition failed'), detail);
-        };
-        stopAfter(noSpeechTimeoutMs, 'nothing said');
-        log('listen started');
-        rec.start(locale()).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
-      });
-      const request = stripEcho(heard, lastSpoken);
-      if (request !== heard) log(`echo removed: ${JSON.stringify(heard)} → ${JSON.stringify(request)}`);
-      return request;
+      // The user started talking over the last answer: carry on with that session.
+      const carried = barged;
+      barged = null;
+      if (!carried) {
+        if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
+        // Only right after speaking: between silent listening turns every millisecond the mic is
+        // off is a chance to miss a one-word "yes".
+        const quietFor = Date.now() - spokeUntil;
+        if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
+      }
+      if (signal.aborted) {
+        carried?.abort('aborted');
+        return '';
+      }
+      const session = carried ?? (await startSession('listen'));
+      session.attach(onPartial, onLevel);
+      const onAbort = () => session.abort('aborted');
+      signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        const heard = await session.result;
+        const request = stripEcho(heard, lastSpoken, { anywhere: !!carried });
+        if (request !== heard) log(`echo removed: ${JSON.stringify(heard)} → ${JSON.stringify(request)}`);
+        return request;
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
     },
   };
 }
