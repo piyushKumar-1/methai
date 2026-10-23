@@ -113,9 +113,29 @@ describe('deviceVoice', () => {
     expect(heard).toBe('book an auto');
   });
 
-  test('silence resolves empty; real recognizer failures reject', async () => {
+  test('silence and transient errors resolve empty; real recognizer failures reject', async () => {
     expect((await listen(rec => rec.error('7'))).heard).toBe('');
-    await expect(listen(rec => rec.error('5'))).rejects.toThrow('5/No match');
+    expect((await listen(rec => rec.error('11'))).heard).toBe('');
+    await expect(listen(rec => rec.error('12'))).rejects.toThrow('12/No match');
+  });
+
+  test("a new turn starts only after the last turn's recognizer has shut down", async () => {
+    const rec = fakeRecognizer();
+    let finishDestroy!: () => void;
+    rec.destroy = jest.fn(() => new Promise<void>(resolve => (finishDestroy = resolve)));
+    const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
+    const first = io.listen(signal);
+    await new Promise(r => setTimeout(r, 0));
+    rec.error('7');
+    expect(await first).toBe('');
+    const second = io.listen(signal);
+    await new Promise(r => setTimeout(r, 50));
+    expect(rec.start).toHaveBeenCalledTimes(1); // still waiting for destroy()
+    finishDestroy();
+    await new Promise(r => setTimeout(r, 0));
+    expect(rec.start).toHaveBeenCalledTimes(2);
+    rec.error('7');
+    expect(await second).toBe('');
   });
 
   test('its own words heard from the loudspeaker are removed', async () => {

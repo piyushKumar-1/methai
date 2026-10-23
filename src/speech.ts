@@ -21,6 +21,15 @@ export function isNoSpeechError(code: string | null | undefined, message: string
 }
 
 /**
+ * True for recognizer errors that go away on a retry: Android ERROR_CLIENT (5), ERROR_RECOGNIZER_BUSY
+ * (8) and ERROR_SERVER_DISCONNECTED (11), which show up when a new session starts while the last
+ * one is still shutting down.
+ */
+export function isTransientSpeechError(code: string | null | undefined): boolean {
+  return code === '5' || code === '8' || code === '11';
+}
+
+/**
  * Upper bound for speaking `text` aloud, so a TTS engine that dies mid-utterance (and never sends
  * its finish event) can't stall the conversation: ~12 characters a second, plus slack, capped.
  */

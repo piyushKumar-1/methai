@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import type { VoiceIO } from './assistant';
 import { toCaptionText } from './captions';
-import { isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
+import { isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
 
 /** Results event from the speech recognizer: best guess first. */
 export interface RecognizerResults {
@@ -95,6 +95,9 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   // What was last said aloud and when it finished, to strip echo and let the speaker go quiet.
   let lastSpoken = '';
   let spokeUntil = 0;
+  // The last turn's stop() + destroy(). A new turn waits for it: destroying late would kill the
+  // session that just started ("Connection to speech recognition service lost").
+  let teardown: Promise<unknown> = Promise.resolve();
 
   // Android TTS binds to an engine asynchronously; speaking before that fails with not_ready.
   const ensureTts = (): Promise<boolean> =>
@@ -181,6 +184,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       // is a chance to miss a one-word "yes".
       const quietFor = Date.now() - spokeUntil;
       if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
+      // A recognizer that died never answers stop/destroy, so don't wait for it forever.
+      await Promise.race([teardown, sleep(600)]);
       if (signal.aborted) return '';
 
       const heard = await new Promise<string>((resolve, reject) => {
@@ -200,7 +205,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
           // would leave the assistant stuck listening.
           if (error) reject(error);
           else resolve(transcript.trim());
-          rec
+          teardown = rec
             .stop()
             .then(() => rec.destroy())
             .catch(() => {});
@@ -230,7 +235,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         // "No match" / speech timeout just mean silence; only real failures are errors.
         rec.onSpeechError = e => {
           const detail = `recognizer error ${e.error?.code ?? '?'}/${e.error?.message ?? ''}`;
-          if (transcript || isNoSpeechError(e.error?.code, e.error?.message)) finish(undefined, detail);
+          // Transient errors count as "nothing heard": the conversation listens again.
+          if (transcript || isNoSpeechError(e.error?.code, e.error?.message) || isTransientSpeechError(e.error?.code)) finish(undefined, detail);
           else finish(new Error(e.error?.message ?? 'Speech recognition failed'), detail);
         };
         stopAfter(noSpeechTimeoutMs, 'nothing said');
