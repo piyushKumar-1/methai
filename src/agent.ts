@@ -41,6 +41,8 @@ export interface RunAgentOptions {
   /** Replaces the built-in agent rules (the app context is still appended). */
   systemPrompt?: string;
   onToolCall?: (call: ModelToolCall, result: ModelToolResult) => void;
+  /** Text the model sends along with tool calls ("Sure, finding autos…"), while it keeps working. */
+  onProgress?: (text: string) => void;
 }
 
 /** Runs request → tool calls → actions → … until the model answers without tools. Returns its answer. */
@@ -67,6 +69,7 @@ async function drive(
     let turn = await first(signal, opts.screen ?? (await controller.describe()));
     for (let step = 0; step < (opts.maxSteps ?? 20); step++) {
       if (turn.toolCalls.length === 0) return turn.text ?? '';
+      if (turn.text?.trim()) opts.onProgress?.(turn.text.trim());
       // UI actions depend on each other, so they run in order.
       const results: ModelToolResult[] = [];
       for (const call of turn.toolCalls) {

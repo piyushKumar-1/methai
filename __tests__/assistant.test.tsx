@@ -285,3 +285,21 @@ test('a failed model call is not continued by the next session', async () => {
   expect(model.followUp).not.toHaveBeenCalled();
   await act(async () => renderer.unmount());
 });
+
+test('text sent with tool calls is spoken as progress while the agent keeps working', async () => {
+  const heard = ['log me in', 'thanks'];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const model: AgentModel = {
+    start: async () => ({ text: 'Sure, logging you in.', toolCalls: [{ id: 'p', name: 'press_element', input: { element_id: 'btn_log_in' } }] }),
+    continue: async () => ({ text: 'Done.', toolCalls: [] }),
+    followUp: jest.fn(),
+  };
+  const { renderer, provider } = await mount({ voice, model });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(log).toEqual(['login:']);
+  expect(spoken).toEqual(['How can I help?', 'Sure, logging you in.', 'Done.', 'Okay.']);
+  await act(async () => renderer.unmount());
+});

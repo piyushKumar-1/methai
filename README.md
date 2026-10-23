@@ -149,6 +149,9 @@ first request is about what they were looking at.
 - `greeting` can be a function of `{ screen, resumed }`: return a fixed line, or `undefined` to let
   the model open the session itself from the screen and the conversation so far
   (e.g. "Still want the auto to Cubbon Park?").
+- Text the model sends together with tool calls ("Sure, finding autos to the airport.") is spoken
+  right away while the agent keeps working, so multi-step tasks don't start with a long silence
+  (`onProgress` on `runAgent` for your own loops).
 - `useAssistant().log` is the conversation so far (`{ role, text }[]`), for captions or a transcript.
 - One button does it all: tap to start, tap while it talks to cut the answer short (`interrupt()`),
   tap while it listens to end.

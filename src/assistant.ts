@@ -151,6 +151,8 @@ export class VoiceAssistant {
   /** A typed request waiting for the next listening turn, and the turn listening right now. */
   private pendingText: string | null = null;
   private typedHandler: ((text: string) => void) | null = null;
+  /** Spoken progress updates still playing while the agent works; answers wait for them. */
+  private progressSpeech: Promise<void> = Promise.resolve();
   private listeners = new Set<(s: AssistantStatus) => void>();
 
   constructor(
@@ -241,6 +243,19 @@ export class VoiceAssistant {
     }
   }
 
+  /**
+   * Speaks a progress line ("Sure, finding autos to the airport") without holding up the agent.
+   * Lines queue behind each other; the answer and the next listen wait for them to finish.
+   */
+  private sayProgress(voice: VoiceIO, text: string, signal: AbortSignal): void {
+    this.progressSpeech = this.progressSpeech.then(async () => {
+      if (signal.aborted) return;
+      this.set({ state: 'speaking' });
+      await this.speak(voice, text, signal).catch(() => {});
+      if (this.abort && !signal.aborted && this.status.state === 'speaking') this.set({ state: 'thinking' });
+    });
+  }
+
   /** Listens for speech, unless a request is typed first (which stops the mic). */
   private listenOrType(voice: VoiceIO, signal: AbortSignal): Promise<string> {
     const mic = new AbortController();
@@ -281,6 +296,7 @@ export class VoiceAssistant {
     this.controller.setActive(true);
     this.set({ state: 'greeting', transcript: '', error: undefined, ...(!resumed && { log: [] }) });
     this.interruptHandler = null;
+    this.progressSpeech = Promise.resolve();
     try {
       // Capture before the user speaks: this is the screen they are asking about.
       const screen = await this.controller.describe();
@@ -322,7 +338,7 @@ export class VoiceAssistant {
       const ask = async (request: string) => {
         const live = this.conversation?.model === agentModel && !!agentModel.followUp;
         this.conversation = null;
-        const callOpts = { ...opts, screen: firstScreen };
+        const callOpts = { ...opts, screen: firstScreen, onProgress: (text: string) => this.sayProgress(voice, text, signal) };
         firstScreen = undefined;
         const answer = live
           ? await runAgentFollowUp(this.controller, agentModel, request, callOpts)
@@ -331,6 +347,7 @@ export class VoiceAssistant {
         return answer;
       };
       const listen = async () => {
+        await this.progressSpeech;
         this.set({ state: 'listening', transcript: '' });
         const typed = this.pendingText;
         this.pendingText = null;
@@ -382,6 +399,7 @@ export class VoiceAssistant {
         this.set({ state: 'thinking' });
         // Later turns continue the same conversation, so "and one more" or "yes" make sense.
         answer = await ask(request);
+        await this.progressSpeech;
         if (answer) {
           this.set({ state: 'speaking' });
           await this.speak(voice, answer, signal);
