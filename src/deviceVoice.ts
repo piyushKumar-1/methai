@@ -19,7 +19,7 @@ export interface SpeechRecognizerModule {
   removeAllListeners(): void;
   onSpeechPartialResults?: (e: RecognizerResults) => void;
   onSpeechResults?: (e: RecognizerResults) => void;
-  onSpeechEnd?: (e: unknown) => void;
+  onSpeechEnd?: (e: any) => void;
   onSpeechError?: (e: { error?: { code?: string; message?: string } }) => void;
   onSpeechVolumeChanged?: (e: { value?: number }) => void;
 }
