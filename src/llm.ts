@@ -64,9 +64,36 @@ export function formatSnapshot(snapshot: ScreenSnapshot): string {
     lines.push('Visible text:');
     for (const t of snapshot.texts) lines.push(`- ${t}`);
   }
-  lines.push(snapshot.elements.length ? 'Interactive elements (refer to them by the id in brackets):' : 'No interactive elements on screen.');
-  for (const el of snapshot.elements) lines.push(`- ${describeElement(el)}`);
+  const { listed, skipped } = elementsForModel(snapshot.elements);
+  lines.push(listed.length ? 'Interactive elements (refer to them by the id in brackets):' : 'No interactive elements on screen.');
+  for (const el of listed) lines.push(`- ${describeElement(el)}`);
+  if (skipped) lines.push(`(${skipped} more off-screen elements not listed; scroll to see them.)`);
   return lines.join('\n');
+}
+
+// Off-screen elements listed at most, so a long feed doesn't drown out what is on screen.
+const MAX_OFFSCREEN = 15;
+// Labels that say nothing: a bare "button", or text built from a missing value ("Slide 2 - undefined").
+const MEANINGLESS_LABEL = /^(unlabeled button|button)$|\b(undefined|null|NaN)\b/i;
+
+/**
+ * Everything on screen, plus the off-screen elements worth knowing about: ones with a real label,
+ * not repeating an element already listed, up to a limit.
+ */
+export function elementsForModel(elements: ScreenElement[]): { listed: ScreenElement[]; skipped: number } {
+  const seen = new Set(elements.filter(el => !el.offscreen).map(el => `${el.kind}:${el.label.trim().toLowerCase()}`));
+  let offscreen = 0;
+  let skipped = 0;
+  const listed = elements.filter(el => {
+    if (!el.offscreen) return true;
+    const key = `${el.kind}:${el.label.trim().toLowerCase()}`;
+    const keep = !MEANINGLESS_LABEL.test(el.label.trim()) && !seen.has(key) && offscreen < MAX_OFFSCREEN;
+    seen.add(key);
+    if (keep) offscreen++;
+    else skipped++;
+    return keep;
+  });
+  return { listed, skipped };
 }
 
 export interface JSONSchemaObject {

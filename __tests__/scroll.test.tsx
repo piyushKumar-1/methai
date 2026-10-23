@@ -26,6 +26,31 @@ test('off-screen elements are listed as pressable without scrolling', () => {
   expect(text).toContain('[btn_xl_cab] button "XL Cab" [off-screen; press works without scrolling]');
 });
 
+test('off-screen noise is left out: bare or broken labels, repeats, and anything past the limit', () => {
+  const button = (id: string, label: string, offscreen = true) => ({ id, kind: 'button' as const, label, actions: ['press' as const], disabled: false, offscreen });
+  const text = formatSnapshot({
+    screen: 'Home',
+    capturedAt: 0,
+    texts: [],
+    elements: [
+      button('home_banner', 'Home Banner button', false),
+      button('home_banner_2', 'Home Banner button'),
+      button('btn_unlabeled', 'unlabeled button'),
+      button('btn_slide_2', 'Slide 2 of 7 - undefined'),
+      button('safety', 'Our Safety Pledge. Watch now'),
+      ...Array.from({ length: 20 }, (_, i) => button(`chip_${i}`, `Chip ${i}`)),
+    ],
+  });
+  expect(text).toContain('[home_banner] button "Home Banner button"');
+  expect(text).not.toContain('home_banner_2');
+  expect(text).not.toContain('btn_unlabeled');
+  expect(text).not.toContain('btn_slide_2');
+  expect(text).toContain('[safety]');
+  expect(text).toContain('[chip_13]');
+  expect(text).not.toContain('[chip_14]');
+  expect(text).toContain('(9 more off-screen elements not listed; scroll to see them.)');
+});
+
 /** Stands in for React Native's ScrollView class: the scroll tool finds lists by scrollTo + getScrollResponder. */
 class FakeScrollView extends Component<{ horizontal?: boolean; children: ReactNode; name: string }> {
   scrolledTo: unknown[] = [];

@@ -218,6 +218,14 @@ call their handlers directly, so the agent can press them without scrolling. Lon
 rows near the visible area, so the built-in `scroll` tool pages any ScrollView / FlatList /
 SectionList (the biggest one on screen, or the one around a given element) to reveal more.
 `includeOffscreen: false` in capture options keeps only what is on screen.
+The model sees at most 15 off-screen elements, skipping ones with no real label ("unlabeled
+button", "Slide 2 - undefined") and repeats of an element already listed.
+
+### Pauses while speaking
+
+`deviceVoice` ends the user's turn after a pause of `endOfSpeechMs` (default 1300ms). Android's
+recognizer often stops by itself sooner; when it does right after words, it is restarted and what
+follows is added on, so a pause mid-sentence doesn't cut the user off.
 
 ### Waiting for the screen
 
