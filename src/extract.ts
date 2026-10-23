@@ -1,4 +1,4 @@
-import { StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, StyleSheet, Switch, TextInput } from 'react-native';
 import { AIAction, AIIgnore, AIScreenAction } from './annotations';
 import { displayNameOf, Fiber, FiberTag } from './fiber';
 import type { ActionType, CaptureOptions, ElementKind, ScreenElement, ScreenSnapshot } from './types';
@@ -60,6 +60,8 @@ interface WalkState {
   texts: TextPiece[];
   annotations: Annotation[];
   route?: { name: string; depth: number };
+  /** A spinner or busy element is on screen. */
+  loading?: boolean;
 }
 
 const isFn = (v: unknown): v is Function => typeof v === 'function';
@@ -91,6 +93,16 @@ function isHidden(fiber: Fiber): boolean {
     if (style?.display === 'none') return true;
   }
   return false;
+}
+
+const SPINNER_HOSTS = /^(RCTActivityIndicatorView|AndroidProgressBar)$/;
+
+/** Spinners and elements that say they are busy: the screen is still loading. */
+function isLoadingIndicator(fiber: Fiber): boolean {
+  if (fiber.elementType === ActivityIndicator) return fiber.memoizedProps?.animating !== false;
+  if (fiber.tag === FiberTag.HostComponent && SPINNER_HOSTS.test(String(fiber.type))) return fiber.memoizedProps?.animating !== false;
+  const p = fiber.memoizedProps;
+  return !!p && typeof p === 'object' && (p.accessibilityState?.busy === true || p['aria-busy'] === true || p.accessibilityRole === 'progressbar');
 }
 
 /** react-navigation's NavigationRouteContext value. */
@@ -156,6 +168,8 @@ function visit(fiber: Fiber, state: WalkState, owner: Draft | null, onChain: boo
   const t = fiber.elementType;
   if (t === AIIgnore) return;
 
+  if (!state.loading && isLoadingIndicator(fiber)) state.loading = true;
+
   const name = routeName(fiber);
   if (name && (!state.route || depth >= state.route.depth)) state.route = { name, depth };
 
@@ -204,10 +218,29 @@ function visit(fiber: Fiber, state: WalkState, owner: Draft | null, onChain: boo
     state.drafts.push(draft);
     current = draft;
     chain = true;
+  } else if (kind && owner && onChain) {
+    // The same control further down its wrapper chain (a Card component with onPress rendering
+    // a Pressable): the inner one often carries the real label ("Mini, ₹120, capacity 4") while
+    // the outer only has a title. Its explicit label and hint win over the outer's fallbacks.
+    adoptLabel(owner, fiber.memoizedProps);
   }
 
   walk(fiber.child, state, current, chain, depth + 1);
   if (pushedAnnotation) state.annotations.pop();
+}
+
+function adoptLabel(owner: Draft, inner: any) {
+  const outer = owner.props ?? {};
+  const label = str(inner?.accessibilityLabel) ?? str(inner?.['aria-label']);
+  const hint = str(inner?.accessibilityHint);
+  const hasLabel = str(outer.accessibilityLabel) ?? str(outer['aria-label']);
+  if ((label && !hasLabel) || (hint && !str(outer.accessibilityHint))) {
+    owner.props = {
+      ...outer,
+      ...(label && !hasLabel && { accessibilityLabel: label }),
+      ...(hint && !str(outer.accessibilityHint) && { accessibilityHint: hint }),
+    };
+  }
 }
 
 function slug(s: string): string {
@@ -340,5 +373,5 @@ export function extract(root: Fiber | null, opts: CaptureOptions = {}, getScreen
     screen = state.route?.name;
   }
 
-  return { snapshot: { screen, capturedAt: Date.now(), elements, texts }, entries };
+  return { snapshot: { screen, capturedAt: Date.now(), elements, texts, ...(state.loading && { loading: true }) }, entries };
 }

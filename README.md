@@ -123,6 +123,10 @@ const { isError, content } = await screen.executeToolCall(toolUse.name, toolUse.
 For OpenAI-compatible gateways (LiteLLM, vLLM, …) there is a ready adapter:
 `openAIChatModel({ endpoint, model })`. It posts chat-completions bodies to your backend route,
 which adds the key and forwards them.
+`fallbackModels: ['…']` lists models to try when a call is rate-limited (429), hits a server
+error or the network fails; the conversation carries over and a failing model sits out
+`cooldownMs` (30s), and `attemptTimeoutMs` drops a model that is too slow to answer. In a voice session one failed turn is answered with `errorReply` and the user
+can say it again; a second failure in a row ends the session with the error.
 
 `runAgent(controller, model, request)` is a provider-agnostic loop: request → tool calls →
 actions → … → final answer. You plug in a model through the small `AgentModel` interface
@@ -146,9 +150,14 @@ first request is about what they were looking at.
 - `resumeWithinMs` continues the previous conversation when the assistant is reopened within that
   time, so "yes, book it" still makes sense after closing it. A conversation whose last model call
   failed or was cut off is never continued.
+  Every model call gets the current screen; if the user changed it themselves since the model last
+  acted, the model is told so and goes by the new screen rather than the old task.
 - `greeting` can be a function of `{ screen, resumed }`: return a fixed line, or `undefined` to let
   the model open the session itself from the screen and the conversation so far
   (e.g. "Still want the auto to Cubbon Park?").
+- `speakProgress: true` speaks text the model sends together with tool calls ("Sure, finding autos
+  to the airport.") right away while the agent keeps working (`onProgress` on `runAgent` for your
+  own loops). Off by default: only answers are spoken.
 - `useAssistant().log` is the conversation so far (`{ role, text }[]`), for captions or a transcript.
 - One button does it all: tap to start, tap while it talks to cut the answer short (`interrupt()`),
   tap while it listens to end.
@@ -172,6 +181,97 @@ import { AssistantButton, ScreenContextProvider, useAssistant } from 'react-nati
 // …or from any button of your own
 const { state, transcript, toggle } = useAssistant();   // state: idle | greeting | listening | thinking | speaking
 ```
+
+### On-device voice
+
+`deviceVoice()` is a ready VoiceIO on the phone's own engines. Pass in the speech libraries you use
+(the library itself has no native dependencies):
+
+```ts
+import Voice from '@react-native-voice/voice';
+import Tts from 'react-native-tts';
+import { deviceVoice } from 'react-native-screen-context';
+
+const voice = deviceVoice({
+  recognizer: Voice,
+  tts: Tts,
+  locale: () => 'en-IN',                        // read every turn, so it can follow the app language
+  requestMicPermission: askForMic,              // optional
+  speakable: text => text.replace(/₹(\d+)/g, '$1 rupees'),  // optional: how replies are read aloud
+  log: console.log,                             // optional: listen started / partials / why it ended
+});
+```
+
+You can cut it off by voice: while it speaks it listens for "stop", "wait", "hold on", "hey"…, then
+stops and listens to you (`bargeIn`, default true). Phones don't cancel their own speaker from the
+mic, so the reply comes back garbled ("Nexus" → "next is called"); only a stop word that sounds
+like nothing in the reply is trusted, and nothing overheard while it talks becomes a request. It picks the most natural installed voice for the language, removes its own words if the mic hears
+them from the loudspeaker, keeps one-word answers that the recognizer reports as "no match", reports
+mic loudness for the glow, and never hangs on an engine that dies mid-utterance. The helpers it uses
+(`pickBestVoice`, `stripEcho`, `micLevelFromRms`, …) are exported for your own adapters.
+
+### Model wrappers
+
+- `withModelTimeout(model, ms)`: a stuck backend ends in an error instead of silence.
+- `withModelLogging(model, log)`: requests, screens, tool calls, results, replies and timings.
+- `withConfirmationGuard(model, { isSensitive })`: opt-in hard rule that matching controls are only
+  pressed after the user said yes (a prompt can ask the model to confirm; only this guarantees it).
+
+### Off-screen elements and scrolling
+
+Elements that are mounted but scrolled out of view stay in the snapshot, marked off-screen: actions
+call their handlers directly, so the agent can press them without scrolling. Long lists only render
+rows near the visible area, so the built-in `scroll` tool pages any ScrollView / FlatList /
+SectionList (the biggest one on screen, or the one around a given element) to reveal more.
+`includeOffscreen: false` in capture options keeps only what is on screen.
+The model sees at most 15 off-screen elements, skipping ones with no real label ("unlabeled
+button", "Slide 2 - undefined") and repeats of an element already listed.
+
+
+### Waiting for the screen
+
+After every action the agent waits until the screen settles (no changes for a moment, no spinner)
+instead of a fixed delay, and the built-in `wait_for_screen` tool lets the model wait for data that
+arrives later (search results, prices). A snapshot is marked loading while a spinner shows.
+
+### Knowing the user
+
+Speech recognition mishears names ("to know my three office" for "Namma Yatri office"). Tell the
+agent who the user is and it resolves them, the way a person would:
+
+```tsx
+<ScreenContextProvider
+  assistant={{
+    voice, model, app,
+    // Read at the start of every session; keep it short (it goes into the system prompt).
+    userContext: () => `Saved places: Home: HSR Layout; Work: Namma Yatri office, Koramangala
+Recent trips: HSR Layout → Namma Yatri office (Auto); Koramangala → Airport (Cab)`,
+  }}
+>
+```
+
+The recognizer's other guesses go to the model with each request too (`HeardSpeech.alternatives`,
+filled in by `deviceVoice`), so it can pick the reading that makes sense.
+
+### Ready-made UI
+
+`<AssistantOverlay />` is the whole on-screen part: a button docked to the screen edge and a bubble
+beside it with what is being said — the user's words while it listens, the reply typed out while it
+speaks, gone once it stops talking. Theme and place it to match your app:
+
+```tsx
+<ScreenContextProvider assistant={{ voice, model }} glow={{ colors: [brand, brand2] }}>
+  <App />
+  <AssistantOverlay
+    theme={{ background: '#111', foreground: '#FCC32C', accent: '#FCC32C' }}   // or background: [from, to]
+    position={{ side: 'right', vertical: 0.42 }}
+    icon={<MyMicIcon />}            // optional; a built-in mic otherwise
+    typeToAsk={__DEV__}             // long-press to type a request (emulators have no speech engines)
+  />
+</ScreenContextProvider>
+```
+
+`useAssistant().submitText(text)` sends a typed request from your own UI the same way.
 
 ### Describing your app (system prompt)
 

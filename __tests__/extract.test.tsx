@@ -1,5 +1,5 @@
 import { createContext, useState } from 'react';
-import { Button, Pressable, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Button, Pressable, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
 import {
   AIAction,
@@ -149,7 +149,7 @@ test('tool calls round-trip and return the new screen', async () => {
   expect(res.content).toMatch(/^OK: press on btn_forgot_password/);
   expect(res.content).toContain('[btn_log_in] button "Log in" — Signs in with the email and password');
   expect(log).toEqual(['forgot']);
-  expect(anthropicTools().map(t => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'run_screen_action']);
+  expect(anthropicTools().map(t => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'scroll', 'run_screen_action']);
 });
 
 test('formatSnapshot', () => {
@@ -169,4 +169,105 @@ Interactive elements (refer to them by the id in brackets):
 - [promo_banner] button "Promo" [disabled]
 - [action_refresh] action "refresh" args schema: {"type":"object"} — Reloads the account"
 `);
+});
+
+test("a card component's inner Pressable label wins over its title, even with hidden content", () => {
+  function RideCard({ title, fare, selected, onPress }: { title: string; fare: number; selected: boolean; onPress: () => void }) {
+    return (
+      <Pressable onPress={onPress} accessibilityLabel={`${title}, ₹ ${fare}, capacity 4`}>
+        <View importantForAccessibility={selected ? 'yes' : 'no-hide-descendants'}>
+          <Text>{title}</Text>
+          <Text>₹{fare}</Text>
+        </View>
+      </Pressable>
+    );
+  }
+  let renderer!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    renderer = TestRenderer.create(
+      <ScreenContextProvider>
+        <RideCard title="Non-AC Mini" fare={120} selected={false} onPress={() => {}} />
+        <RideCard title="AC Cab" fare={180} selected onPress={() => {}} />
+      </ScreenContextProvider>,
+    );
+  });
+  const provider = renderer.root.findByType(ScreenContextProvider).instance as ScreenContextProvider;
+  expect(provider.controller.captureSync().elements.map(e => e.label)).toEqual(['Non-AC Mini, ₹ 120, capacity 4', 'AC Cab, ₹ 180, capacity 4']);
+  act(() => renderer.unmount());
+});
+
+function Prices() {
+  const [state, setState] = useState<'idle' | 'loading' | 'ready'>('idle');
+  const load = () => {
+    setState('loading');
+    setTimeout(() => setState('ready'), 600);
+  };
+  return (
+    <View>
+      <Button title="Show prices" onPress={load} />
+      {state === 'loading' && <ActivityIndicator />}
+      {state === 'ready' && <Text>Auto ₹45</Text>}
+    </View>
+  );
+}
+
+/**
+ * Runs outside act(), the way an agent runs in the app: act() holds React updates until it ends,
+ * so a screen that loads after a tap would never change while we wait for it.
+ */
+async function live<T>(fn: () => Promise<T>): Promise<T> {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    return await fn();
+  } finally {
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  }
+}
+
+async function mountPrices() {
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <ScreenContextProvider>
+        <Prices />
+      </ScreenContextProvider>,
+    );
+  });
+  return { renderer, controller: (renderer.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).controller };
+}
+
+test('an action waits for the spinner it started, so the result shows what loaded', async () => {
+  const { renderer, controller } = await mountPrices();
+  const res = await live(() => controller.executeToolCall('press_element', { element_id: 'btn_show_prices' }, { measure: false }));
+  expect(res.content).toContain('Auto ₹45');
+  expect(res.content).not.toContain('Still loading');
+  await act(async () => renderer.unmount());
+});
+
+test('the snapshot says when a spinner is showing', async () => {
+  const { renderer, controller } = await mountPrices();
+  await live(() => controller.execute({ type: 'press', elementId: 'btn_show_prices' }, { maxSettleMs: 0 }));
+  expect(controller.captureSync().loading).toBe(true);
+  expect(formatSnapshot(controller.captureSync())).toContain('Still loading');
+  await act(async () => renderer.unmount());
+});
+
+test('wait_for_screen returns as soon as the screen changes and settles', async () => {
+  const { renderer, controller } = await mountPrices();
+  await live(() => controller.execute({ type: 'press', elementId: 'btn_show_prices' }, { maxSettleMs: 0 }));
+  const started = Date.now();
+  const res = await live(() => controller.executeToolCall('wait_for_screen', '{"seconds": 5}', { measure: false }));
+  expect(res.content).toMatch(/^Screen updated/);
+  expect(res.content).toContain('Auto ₹45');
+  expect(Date.now() - started).toBeLessThan(2500);
+  await act(async () => renderer.unmount());
+});
+
+test('wait_for_screen on a screen that is already loaded returns quickly instead of waiting it out', async () => {
+  const { renderer, controller } = await mountPrices();
+  const started = Date.now();
+  const res = await live(() => controller.executeToolCall('wait_for_screen', '{"seconds": 5}', { measure: false }));
+  expect(res.content).toMatch(/^Nothing is loading; the screen is ready\./);
+  expect(Date.now() - started).toBeLessThan(2500);
+  await act(async () => renderer.unmount());
 });

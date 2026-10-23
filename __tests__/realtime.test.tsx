@@ -118,7 +118,7 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   const [update, greet] = ws.sent;
   expect(update.type).toBe('session.update');
   expect(update.session.audio.output.voice).toBe('alloy');
-  expect(update.session.tools.map((t: any) => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'run_screen_action', 'end_conversation']);
+  expect(update.session.tools.map((t: any) => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'scroll', 'run_screen_action', 'end_conversation']);
   expect(update.session.instructions).toContain('[btn_place_order] button "Place order"');
   expect(update.session.instructions).toContain('About the app: FreshCart\nGrocery delivery in 20 minutes.');
   expect(update.session.instructions).toContain('- Shop: Products and the cart (reach it via the Shop tab)');
@@ -143,7 +143,7 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
     ws.server({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'place my order' });
     ws.server({ type: 'response.done', response: { status: 'completed', output: [{ type: 'function_call', call_id: 'c1', name: 'press_element', arguments: '{"element_id":"btn_place_order"}' }] } });
   });
-  await act(async () => new Promise(r => setTimeout(r, 400))); // action settle time
+  await act(async () => new Promise(r => setTimeout(r, 900))); // action settle time
   const out = ws.sent.find(e => e.type === 'conversation.item.create');
   expect(out.item.call_id).toBe('c1');
   expect(out.item.output).toMatch(/^OK: press on btn_place_order/);

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AgentGlow, AssistantButton, isStopPhrase, OPENING_REQUEST, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
+import { AgentGlow, AssistantButton, buildInstructions, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -265,11 +265,39 @@ test('a greeting function can hand the opening to the model, which continues a r
   await act(async () => renderer.unmount());
 });
 
-test('a failed model call is not continued by the next session', async () => {
+test('screenChangeNote tells the model when the user moved on by themselves', () => {
+  const choose = 'Screen: Home (ChooseRide stage)\nVisible text:\n- Choose a ride';
+  const tracking = 'Screen: RideTracking\nVisible text:\n- Driver is on the way';
+  expect(screenChangeNote(choose, tracking)).toBe(
+    '(The user changed the screen themselves since you last acted: it was "Home (ChooseRide stage)", now it is "RideTracking". ' +
+      'Whatever you were doing may be done or dropped; go by the current screen.)',
+  );
+  expect(screenChangeNote(choose, `${choose}\n- 4 mins`)).toBe(''); // same screen, new details
+  expect(screenChangeNote('', tracking)).toBe('');
+});
+
+test('a failed turn is told and the user can say it again; only repeated failures end the session', async () => {
   const heard = ['book a cab', 'book a cab'];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const model: AgentModel = {
+    start: jest.fn().mockRejectedValueOnce(new Error('Model request failed (429)')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
+    continue: jest.fn(),
+  };
+  const { renderer, provider } = await mount({ voice, model, greeting: 'Hi!' });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(spoken).toEqual(['Hi!', "Sorry, I couldn't do that. Please say it again.", 'Where to?']);
+  expect(provider.assistant!.getStatus().error).toBeUndefined();
+  await act(async () => renderer.unmount());
+});
+
+test('a failed model call is not continued by the next session', async () => {
+  const heard = ['book a cab', 'book a cab', 'book a cab'];
   const voice: VoiceIO = { speak: async () => {}, listen: async () => heard.shift() ?? '' };
   const model: AgentModel = {
-    start: jest.fn().mockRejectedValueOnce(new Error('network')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
+    start: jest.fn().mockRejectedValueOnce(new Error('network')).mockRejectedValueOnce(new Error('network')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
     continue: jest.fn(),
     followUp: jest.fn(),
   };
@@ -281,7 +309,56 @@ test('a failed model call is not continued by the next session', async () => {
   await act(async () => {
     await provider.assistant!.start();
   });
-  expect(model.start).toHaveBeenCalledTimes(2);
+  expect(model.start).toHaveBeenCalledTimes(3);
   expect(model.followUp).not.toHaveBeenCalled();
   await act(async () => renderer.unmount());
+});
+
+test('text sent with tool calls is spoken as progress while the agent keeps working', async () => {
+  const heard = ['log me in', 'thanks'];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const model: AgentModel = {
+    start: async () => ({ text: 'Sure, logging you in.', toolCalls: [{ id: 'p', name: 'press_element', input: { element_id: 'btn_log_in' } }] }),
+    continue: async () => ({ text: 'Done.', toolCalls: [] }),
+    followUp: jest.fn(),
+  };
+  const { renderer, provider } = await mount({ voice, model, speakProgress: true });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(log).toEqual(['login:']);
+  expect(spoken).toEqual(['How can I help?', 'Sure, logging you in.', 'Done.', 'Okay.']);
+  await act(async () => renderer.unmount());
+});
+
+test('user context goes into the system prompt and recognizer alternatives into the request', async () => {
+  const voice: VoiceIO = {
+    speak: async () => {},
+    listen: jest
+      .fn()
+      .mockResolvedValueOnce({ text: 'to know my three office', alternatives: ['to know my office', 'to know Atri office'] })
+      .mockResolvedValue('thanks'),
+  };
+  const seen: { request: string; instructions: string }[] = [];
+  const model: AgentModel = {
+    start: async (request, _screen, _signal, instructions) => (seen.push({ request, instructions }), { text: 'Namma Yatri office?', toolCalls: [] }),
+    continue: jest.fn(),
+    followUp: async () => ({ text: 'Okay.', toolCalls: [] }),
+  };
+  const { renderer, provider } = await mount({ voice, model, userContext: async () => 'Saved places: Work: Namma Yatri office, Koramangala' });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(seen[0].instructions).toContain('About the user');
+  expect(seen[0].instructions).toContain('Work: Namma Yatri office');
+  expect(seen[0].request).toBe('to know my three office\n(Speech recognition, other possible readings: "to know my office", "to know Atri office")');
+  expect(provider.assistant!.getStatus().log[1]).toEqual({ role: 'user', text: 'to know my three office' });
+  await act(async () => renderer.unmount());
+});
+
+test('requestWithAlternatives skips duplicates and empty guesses', () => {
+  expect(requestWithAlternatives({ text: 'yes' })).toBe('yes');
+  expect(requestWithAlternatives({ text: 'yes', alternatives: ['Yes', ' ', 'yeah'] })).toBe('yes\n(Speech recognition, other possible readings: "yeah")');
+  expect(buildInstructions(undefined, 'Base.', '  ')).toBe('Base.');
 });

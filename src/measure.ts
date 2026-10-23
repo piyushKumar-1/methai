@@ -5,7 +5,7 @@ import type { Bounds } from './types';
 
 const MEASURE_TIMEOUT_MS = 250;
 
-function measureInWindow(instance: any): Promise<Bounds | null> {
+export function measureInWindow(instance: any): Promise<Bounds | null> {
   return new Promise(resolve => {
     const timer = setTimeout(() => resolve(null), MEASURE_TIMEOUT_MS);
     try {
@@ -21,12 +21,14 @@ function measureInWindow(instance: any): Promise<Bounds | null> {
 }
 
 /**
- * Attaches window bounds to each entry and returns the ids that are definitely not visible
- * (zero-sized or entirely outside the window). Entries that can't be measured are kept.
+ * Attaches window bounds to each entry and returns the ids that are not visible: `hidden` ones are
+ * zero-sized (collapsed, not really there), `offscreen` ones lie outside the window (usually
+ * scrolled away; still mounted, still pressable). Entries that can't be measured are kept.
  */
-export async function measureEntries(entries: Iterable<ElementEntry>): Promise<Set<string>> {
+export async function measureEntries(entries: Iterable<ElementEntry>): Promise<{ hidden: Set<string>; offscreen: Set<string> }> {
   const { width: W, height: H } = Dimensions.get('window');
   const hidden = new Set<string>();
+  const offscreen = new Set<string>();
   await Promise.all(
     [...entries].map(async entry => {
       if (entry.element.kind === 'custom_action') return;
@@ -35,9 +37,9 @@ export async function measureEntries(entries: Iterable<ElementEntry>): Promise<S
       const b = await measureInWindow(instance);
       if (!b) return;
       entry.element.bounds = { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) };
-      const offscreen = b.x + b.width <= 0 || b.y + b.height <= 0 || b.x >= W || b.y >= H;
-      if (b.width <= 0 || b.height <= 0 || offscreen) hidden.add(entry.element.id);
+      if (b.width <= 0 || b.height <= 0) hidden.add(entry.element.id);
+      else if (b.x + b.width <= 0 || b.y + b.height <= 0 || b.x >= W || b.y >= H) offscreen.add(entry.element.id);
     }),
   );
-  return hidden;
+  return { hidden, offscreen };
 }
