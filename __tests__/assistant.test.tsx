@@ -276,11 +276,28 @@ test('screenChangeNote tells the model when the user moved on by themselves', ()
   expect(screenChangeNote('', tracking)).toBe('');
 });
 
-test('a failed model call is not continued by the next session', async () => {
+test('a failed turn is told and the user can say it again; only repeated failures end the session', async () => {
   const heard = ['book a cab', 'book a cab'];
+  const spoken: string[] = [];
+  const voice: VoiceIO = { speak: async t => void spoken.push(t), listen: async () => heard.shift() ?? '' };
+  const model: AgentModel = {
+    start: jest.fn().mockRejectedValueOnce(new Error('Model request failed (429)')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
+    continue: jest.fn(),
+  };
+  const { renderer, provider } = await mount({ voice, model, greeting: 'Hi!' });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(spoken).toEqual(['Hi!', "Sorry, I couldn't do that. Please say it again.", 'Where to?']);
+  expect(provider.assistant!.getStatus().error).toBeUndefined();
+  await act(async () => renderer.unmount());
+});
+
+test('a failed model call is not continued by the next session', async () => {
+  const heard = ['book a cab', 'book a cab', 'book a cab'];
   const voice: VoiceIO = { speak: async () => {}, listen: async () => heard.shift() ?? '' };
   const model: AgentModel = {
-    start: jest.fn().mockRejectedValueOnce(new Error('network')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
+    start: jest.fn().mockRejectedValueOnce(new Error('network')).mockRejectedValueOnce(new Error('network')).mockResolvedValue({ text: 'Where to?', toolCalls: [] }),
     continue: jest.fn(),
     followUp: jest.fn(),
   };
@@ -292,7 +309,7 @@ test('a failed model call is not continued by the next session', async () => {
   await act(async () => {
     await provider.assistant!.start();
   });
-  expect(model.start).toHaveBeenCalledTimes(2);
+  expect(model.start).toHaveBeenCalledTimes(3);
   expect(model.followUp).not.toHaveBeenCalled();
   await act(async () => renderer.unmount());
 });

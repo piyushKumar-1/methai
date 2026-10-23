@@ -193,6 +193,23 @@ describe('deviceVoice', () => {
     expect((await next).text).toBe('go to Forum mall');
   });
 
+  test("on Android the final result ends the turn at once (that recognizer hears nothing more)", async () => {
+    const { Platform } = require('react-native');
+    const os = Platform.OS;
+    Platform.OS = 'android';
+    try {
+      const rec = fakeRecognizer();
+      const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, endOfSpeechMs: 60_000 });
+      const heard = io.listen(signal);
+      await new Promise(r => setTimeout(r, 0));
+      rec.emit('partial', ['go to']);
+      rec.emit('final', ['go to Forum mall']);
+      expect((await heard).text).toBe('go to Forum mall'); // no 60s wait
+    } finally {
+      Platform.OS = os;
+    }
+  });
+
   test("the recognizer's other guesses come back as alternatives", async () => {
     const rec = fakeRecognizer();
     const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });

@@ -8,6 +8,15 @@ export interface OpenAIChatModelOptions {
    */
   endpoint: string;
   model: string;
+  /**
+   * Models to try, in order, when a call fails with a rate limit, a server error or a network
+   * error. The conversation carries over. A model that failed is skipped for `cooldownMs`.
+   */
+  fallbackModels?: string[];
+  /** How long a failing model is skipped. Default 30s. */
+  cooldownMs?: number;
+  /** Told when a call moves on to a fallback model, for debugging. */
+  log?: (message: string) => void;
   headers?: Record<string, string>;
   /** Overrides the system prompt the agent passes in (agent rules + app context). */
   system?: string;
@@ -17,21 +26,57 @@ export interface OpenAIChatModelOptions {
 
 type ChatMessage = Record<string, unknown> & { role: string };
 
+/** A failure another model (or a moment later) may not have: rate limits, overload, server errors. */
+class RetryableModelError extends Error {}
+
+const isRetryableStatus = (status: number) => status === 408 || status === 429 || status >= 500;
+
 /** AgentModel over OpenAI-style chat completions with function calling. */
 export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
   const tools = openAITools();
   let messages: ChatMessage[] = [];
+  const models = [opts.model, ...(opts.fallbackModels ?? []).filter(m => m !== opts.model)];
+  const cooldownMs = opts.cooldownMs ?? 30_000;
+  // When each model may be tried again after failing.
+  const coolingUntil = new Map<string, number>();
 
-  async function send(signal: AbortSignal): Promise<ModelTurn> {
-    const res = await fetch(opts.endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...opts.headers },
-      body: JSON.stringify({ model: opts.model, messages, tools, tool_choice: 'auto', ...opts.extraBody }),
-      signal,
-    });
+  async function request(model: string, signal: AbortSignal) {
+    let res: Response;
+    try {
+      res = await fetch(opts.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...opts.headers },
+        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', ...opts.extraBody }),
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw err;
+      throw new RetryableModelError(`Model request failed: ${String(err)}`);
+    }
     const json = await res.json().catch(() => null);
     if (!res.ok || !json?.choices?.[0]) {
-      throw new Error(`Model request failed (${res.status}): ${json?.error?.message ?? JSON.stringify(json)?.slice(0, 200)}`);
+      const message = `Model request failed (${res.status}): ${json?.error?.message ?? JSON.stringify(json)?.slice(0, 200)}`;
+      throw isRetryableStatus(res.status) ? new RetryableModelError(message) : new Error(message);
+    }
+    return json;
+  }
+
+  async function send(signal: AbortSignal): Promise<ModelTurn> {
+    const now = Date.now();
+    const ready = models.filter(m => (coolingUntil.get(m) ?? 0) <= now);
+    // If every model is cooling down, try them all anyway rather than fail without asking.
+    const order = ready.length ? ready : models;
+    let json: any;
+    for (let i = 0; ; i++) {
+      try {
+        json = await request(order[i]!, signal);
+        coolingUntil.delete(order[i]!);
+        break;
+      } catch (err) {
+        if (!(err instanceof RetryableModelError) || i === order.length - 1) throw err;
+        coolingUntil.set(order[i]!, Date.now() + cooldownMs);
+        opts.log?.(`${order[i]} failed (${(err as Error).message.slice(0, 80)}); trying ${order[i + 1]}`);
+      }
     }
     const message = json.choices[0].message ?? {};
     const toolCalls: { id: string; function: { name: string; arguments: string } }[] = message.tool_calls ?? [];

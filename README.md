@@ -123,6 +123,10 @@ const { isError, content } = await screen.executeToolCall(toolUse.name, toolUse.
 For OpenAI-compatible gateways (LiteLLM, vLLM, …) there is a ready adapter:
 `openAIChatModel({ endpoint, model })`. It posts chat-completions bodies to your backend route,
 which adds the key and forwards them.
+`fallbackModels: ['…']` lists models to try when a call is rate-limited (429), hits a server
+error or the network fails; the conversation carries over and a failing model sits out
+`cooldownMs` (30s). In a voice session one failed turn is answered with `errorReply` and the user
+can say it again; a second failure in a row ends the session with the error.
 
 `runAgent(controller, model, request)` is a provider-agnostic loop: request → tool calls →
 actions → … → final answer. You plug in a model through the small `AgentModel` interface

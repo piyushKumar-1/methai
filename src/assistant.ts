@@ -173,6 +173,8 @@ export type AssistantConfig = {
   stopPhrases?: string[];
   /** Spoken when the user ends the conversation. Default "Okay." */
   farewell?: string;
+  /** Said when a turn fails (e.g. the model is unreachable) before listening again. Default "Sorry, I couldn't do that. Please say it again." */
+  errorReply?: string;
   /** Safety cap on user turns per session. Default 30. */
   maxTurns?: number;
   /** 'single' mode: when an answer ends with a question, listen for the reply up to this many times. Default 3. */
@@ -433,6 +435,7 @@ export class VoiceAssistant {
       const keepOnSilence = conversation === 'continuous' && config.endOnSilence === false;
       let answer = '';
       let turn = 0;
+      let failures = 0;
       while (turn < (config.maxTurns ?? 30) && !signal.aborted) {
         if (turn > 0) {
           const keepListening = conversation === 'continuous' || (answer.trim().endsWith('?') && turn <= (config.maxFollowUps ?? 3));
@@ -461,7 +464,15 @@ export class VoiceAssistant {
         }
         this.set({ state: 'thinking' });
         // Later turns continue the same conversation, so "and one more" or "yes" make sense.
-        answer = await ask(requestWithAlternatives(heard));
+        try {
+          answer = await ask(requestWithAlternatives(heard));
+          failures = 0;
+        } catch (e: any) {
+          // A failed turn (the model unreachable, say) is told and the user can try again; only
+          // repeated failures end the session.
+          if (signal.aborted || ++failures >= 2) throw e;
+          answer = config.errorReply ?? "Sorry, I couldn't do that. Please say it again.";
+        }
         await this.progressSpeech;
         if (answer) {
           this.set({ state: 'speaking' });

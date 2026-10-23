@@ -200,7 +200,9 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       others = (e.value ?? []).map(v => v.trim()).filter(v => v && v !== text);
       partialTo?.(transcript);
       onWords?.(transcript, session);
-      stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
+      // On Android the final result is the end: that recognizer hears nothing more, so don't wait.
+      if (kind === 'final' && Platform.OS === 'android') stopAfter(0, 'final result');
+      else stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
     };
     rec.onSpeechPartialResults = onText('partial');
     rec.onSpeechResults = onText('final');
