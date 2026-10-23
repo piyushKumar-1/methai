@@ -141,6 +141,15 @@ first request is about what they were looking at.
   see `stopPhrases` and `isStopPhrase`, which ignores requests like "stop the timer"), on silence,
   or when the button is tapped. `farewell` is spoken on the way out.
 - `conversation: 'single'` handles one request. It listens again only when the answer is a question.
+- `endOnSilence: false` keeps a continuous conversation open through silence, until the user says a
+  stop phrase or taps the button.
+- `resumeWithinMs` continues the previous conversation when the assistant is reopened within that
+  time, so "yes, book it" still makes sense after closing it. A conversation whose last model call
+  failed or was cut off is never continued.
+- `greeting` can be a function of `{ screen, resumed }`: return a fixed line, or `undefined` to let
+  the model open the session itself from the screen and the conversation so far
+  (e.g. "Still want the auto to Cubbon Park?").
+- `useAssistant().log` is the conversation so far (`{ role, text }[]`), for captions or a transcript.
 - One button does it all: tap to start, tap while it talks to cut the answer short (`interrupt()`),
   tap while it listens to end.
 - Speech-to-speech models get the same behaviour, plus an `end_conversation` tool they call when
