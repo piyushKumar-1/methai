@@ -65,10 +65,13 @@ export interface DeviceVoiceOptions {
   /**
    * Passed to the recognizer's `start` each time, e.g. engine-specific flags. Default none.
    */
-  recognizerOptions?: Record<string, unknown>;
+  recognizerOptions?: Record<string, unknown> | ((purpose: RecognizerPurpose) => Record<string, unknown> | undefined);
   /** Step-by-step trace (listen started, partials, why it ended, errors), for debugging. */
   log?: (message: string) => void;
 }
+
+/** Why a recognizer session runs: the user's turn, or listening for "stop" while it speaks. */
+export type RecognizerPurpose = 'listen' | 'interrupt';
 
 export interface DeviceVoice extends VoiceIO {
   listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<HeardSpeech>;
@@ -152,7 +155,11 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   }
 
   /** One recognizer session, started once the previous one has shut down. */
-  const startSession = async (label: string, onWords?: (text: string, session: Session) => void): Promise<Session> => {
+  const startSession = async (
+    label: string,
+    onWords?: (text: string, session: Session) => void,
+    purpose: RecognizerPurpose = 'listen',
+  ): Promise<Session> => {
     // A recognizer that died never answers stop/destroy, so don't wait for it forever.
     await Promise.race([teardown, sleep(600)]);
     let transcript = '';
@@ -221,7 +228,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     };
     stopAfter(noSpeechTimeoutMs, 'nothing said');
     log(`${label} started`);
-    (opts.recognizerOptions ? rec.start(locale(), opts.recognizerOptions) : rec.start(locale())).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
+    const options = typeof opts.recognizerOptions === 'function' ? opts.recognizerOptions(purpose) : opts.recognizerOptions;
+    (options ? rec.start(locale(), options) : rec.start(locale())).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
     return session;
   };
 
@@ -241,7 +249,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
           log(`interrupted: ${JSON.stringify(text)}`);
           s.abort('interrupted');
           interrupt();
-        });
+        }, 'interrupt');
         if (done) {
           session.abort('done speaking');
           return;

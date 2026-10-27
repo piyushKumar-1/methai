@@ -212,6 +212,29 @@ describe('deviceVoice', () => {
     }
   });
 
+  test('recognizer options can differ for the user\'s turn and for listening for "stop" while it talks', async () => {
+    const rec = fakeRecognizer();
+    const handlers: Record<string, () => void> = {};
+    const slowTts: TextToSpeechModule = {
+      ...tts,
+      stop: () => (handlers['tts-cancel']?.(), Promise.resolve()),
+      addListener: (event, handler) => ((handlers[event] = handler), { remove: () => {} }),
+    };
+    const recognizerOptions = (purpose: string) => ({ MUTE: purpose === 'listen' ? 'all' : 'keep-media' });
+    const io = deviceVoice({ recognizer: rec, tts: slowTts, locale: () => 'en-IN', micOpenDelayMs: 0, recognizerOptions });
+    const speaking = io.speak('Auto 45 or Meter Cab 38 rupees?', signal);
+    await new Promise(r => setTimeout(r, 10));
+    expect(rec.start).toHaveBeenLastCalledWith('en-IN', { MUTE: 'keep-media' });
+    rec.emit('partial', ['stop']);
+    await speaking;
+    const heard = io.listen(signal);
+    await new Promise(r => setTimeout(r, 10));
+    expect(rec.start).toHaveBeenLastCalledWith('en-IN', { MUTE: 'all' });
+    rec.emit('partial', ['auto']);
+    rec.error('7');
+    expect((await heard).text).toBe('auto');
+  });
+
   test("the recognizer's other guesses come back as alternatives", async () => {
     const rec = fakeRecognizer();
     const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
