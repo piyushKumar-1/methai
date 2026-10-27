@@ -34,7 +34,15 @@ export interface OpenAIRealtimeOptions {
   followUpTimeoutMs?: number;
   /** 'continuous' conversations: end after this much silence following an answer. Default 12000ms. */
   idleTimeoutMs?: number;
-  /** Server VAD: silence that ends the user's turn. Default 600ms. */
+  /**
+   * How the server decides the user's turn is over. 'semantic' (default) judges from the words
+   * whether they're done (a trailing "umm" waits longer); 'server' waits for `silenceDurationMs`
+   * of silence. Falls back to 'server' if the model rejects semantic_vad.
+   */
+  turnDetection?: 'semantic' | 'server';
+  /** semantic_vad: how quickly to answer. 'low' gives the user more time. Default 'auto'. */
+  eagerness?: 'low' | 'medium' | 'high' | 'auto';
+  /** server_vad: silence that ends the user's turn. Default 600ms. */
   silenceDurationMs?: number;
   /** For tests / non-RN runtimes. Defaults to the global WebSocket (RN's accepts a headers option). */
   WebSocketImpl?: any;
@@ -103,8 +111,10 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
           },
         ];
         const instructions = `${systemPrompt}\n\nCurrent screen:\n${screen}`;
-        const vad = { type: 'server_vad', silence_duration_ms: opts.silenceDurationMs ?? 600 };
-        const session =
+        const serverVad = { type: 'server_vad', silence_duration_ms: opts.silenceDurationMs ?? 600 };
+        let vad: object =
+          (opts.turnDetection ?? 'semantic') === 'semantic' ? { type: 'semantic_vad', eagerness: opts.eagerness ?? 'auto' } : serverVad;
+        const sessionWith = (turn_detection: object) =>
           protocol === 'ga'
             ? {
                 type: 'realtime',
@@ -112,7 +122,7 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
                 tools: toolDefs,
                 tool_choice: 'auto',
                 audio: {
-                  input: { format: { type: 'audio/pcm', rate: 24000 }, turn_detection: vad },
+                  input: { format: { type: 'audio/pcm', rate: 24000 }, turn_detection },
                   output: { format: { type: 'audio/pcm', rate: 24000 }, ...(opts.voice && { voice: opts.voice }) },
                 },
               }
@@ -123,12 +133,23 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
                 tool_choice: 'auto',
                 input_audio_format: 'pcm16',
                 output_audio_format: 'pcm16',
-                turn_detection: vad,
+                turn_detection,
                 ...(opts.voice && { voice: opts.voice }),
               };
 
+        // What the user has heard of the answer being played, so a barge-in can truncate it
+        // (conversation.item.truncate): otherwise the model thinks the whole answer was heard.
+        let playing: { itemId: string; startedAt: number; queuedMs: number } | null = null;
+        const truncatePlaying = () => {
+          if (!playing?.itemId) return;
+          const heardMs = Math.max(0, Math.min(playing.queuedMs, Date.now() - playing.startedAt));
+          send({ type: 'conversation.item.truncate', item_id: playing.itemId, content_index: 0, audio_end_ms: Math.round(heardMs) });
+          playing = null;
+        };
+
         /** Opens the mic (once) and ends the session if nobody speaks within `timeoutMs`. */
         const listen = async (timeoutMs: number) => {
+          playing = null; // the last answer has finished playing
           phase = 'conversation';
           setState?.('listening');
           if (!capturing) {
@@ -170,11 +191,12 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
           // Cut the answer short; the server keeps listening for the user's next turn.
           audio.flush();
           send({ type: 'response.cancel' });
+          truncatePlaying();
           setState?.('listening');
         });
 
         ws.onopen = () => {
-          send({ type: 'session.update', session });
+          send({ type: 'session.update', session: sessionWith(vad) });
           // Speak the configured greeting first, then open the mic (avoids the mic hearing it).
           send({ type: 'response.create', response: { instructions: `Say exactly this greeting and nothing else: "${greeting}"` } });
           setState?.('greeting');
@@ -197,6 +219,9 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
             case 'response.audio.delta':
               if (event.delta) {
                 audio.play(event.delta);
+                if (!playing || playing.itemId !== event.item_id) playing = { itemId: event.item_id, startedAt: Date.now(), queuedMs: 0 };
+                // PCM16 mono 24 kHz: 48 bytes per ms, 4 base64 chars per 3 bytes.
+                playing.queuedMs += (event.delta.length * 3) / 4 / 48;
                 if (onLevel) onLevel(levelOf(event.delta));
               }
               if (phase === 'conversation' && !busy) setState?.('speaking');
@@ -206,6 +231,7 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
               awaitingSpeech = false;
               clearTimeout(noSpeechTimer);
               audio.flush(); // barge-in
+              truncatePlaying();
               setState?.('listening');
               break;
             case 'input_audio_buffer.speech_stopped':
@@ -234,10 +260,18 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
               }
               break;
             }
-            case 'error':
-              // Cancelling with nothing to cancel is harmless; everything else ends the session.
-              if (!/cancel/i.test(event.error?.code ?? '')) void finish(new Error(event.error?.message ?? 'Realtime error'));
+            case 'error': {
+              const message: string = event.error?.message ?? '';
+              // Older models don't know semantic_vad: retry with silence-based turn detection.
+              if (vad !== serverVad && /semantic_vad|turn_detection/i.test(message)) {
+                vad = serverVad;
+                send({ type: 'session.update', session: sessionWith(vad) });
+                break;
+              }
+              // Cancelling with nothing to cancel, or truncating finished audio, is harmless; the rest ends the session.
+              if (!/cancel|truncat/i.test(`${event.error?.code ?? ''} ${message}`)) void finish(new Error(message || 'Realtime error'));
               break;
+            }
           }
         };
       });

@@ -119,3 +119,35 @@ export function isInterruption(heard: string, spoken: string): boolean {
   const soundsSaid = (w: string) => said.some(s => s.startsWith(w) || w.startsWith(s));
   return words(heard).some(w => INTERRUPT_WORDS.includes(w) && !soundsSaid(w));
 }
+
+/** Words a sentence doesn't end on: the user is still going ("add apples and", "my email is um"). */
+const CONTINUES = new Set([
+  'and', 'or', 'but', 'so', 'then', 'because', 'if', 'to', 'the', 'a', 'an', 'of', 'for', 'with', 'from', 'in', 'on',
+  'at', 'into', 'my', 'your', 'is', 'are', 'was', 'be', 'like', 'um', 'uh', 'umm', 'uhh', 'er', 'hmm', 'also', 'plus',
+  'some', 'two', 'three', 'please', 'want', "i'm", 'i',
+]);
+
+export interface EndOfTurnOptions {
+  /** Silence after a turn that sounds finished. Default 650ms. */
+  completeMs?: number;
+  /** Silence after anything else. Default 1100ms. */
+  defaultMs?: number;
+  /** Silence after a turn that sounds unfinished (trailing "and", "um", digits). Default 2200ms. */
+  incompleteMs?: number;
+}
+
+/**
+ * How long to wait in silence before treating `transcript` as the user's whole turn. Silence alone
+ * cuts people off mid-thought; the words say whether they are done (a text-only stand-in for
+ * semantic turn detectors such as OpenAI's semantic_vad or LiveKit's turn detector).
+ */
+export function endOfTurnDelay(transcript: string, opts: EndOfTurnOptions = {}): number {
+  const { completeMs = 650, defaultMs = 1100, incompleteMs = 2200 } = opts;
+  const w = words(transcript);
+  const last = w.at(-1);
+  if (!last) return defaultMs;
+  // Trailing connective or hesitation, or a number being read out ("my number is 98 45").
+  if (CONTINUES.has(last) || /^\d+$/.test(last)) return incompleteMs;
+  if (/[?.!]\s*$/.test(transcript) || w.length >= 3) return completeMs;
+  return defaultMs;
+}

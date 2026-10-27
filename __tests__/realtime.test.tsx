@@ -118,6 +118,7 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   const [update, greet] = ws.sent;
   expect(update.type).toBe('session.update');
   expect(update.session.audio.output.voice).toBe('alloy');
+  expect(update.session.audio.input.turn_detection).toEqual({ type: 'semantic_vad', eagerness: 'auto' });
   expect(update.session.tools.map((t: any) => t.name)).toEqual(['press_element', 'type_text', 'toggle_switch', 'wait_for_screen', 'scroll', 'run_screen_action', 'end_conversation']);
   expect(update.session.instructions).toContain('[btn_place_order] button "Place order"');
   expect(update.session.instructions).toContain('About the app: FreshCart\nGrocery delivery in 20 minutes.');
@@ -150,6 +151,14 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   expect(out.item.output).toContain('Order placed');
   expect(ws.sent.at(-1)).toEqual({ type: 'response.create' });
   expect(assistant.getStatus().transcript).toBe('place my order');
+  expect(ws.sent.some(e => e.type === 'conversation.item.truncate')).toBe(false); // the greeting had finished
+
+  // The user talks over an answer: it stops, and the model learns how much was heard.
+  await act(async () => {
+    ws.server({ type: 'response.output_audio.delta', item_id: 'a0', delta: 'DDDD' });
+    ws.server({ type: 'input_audio_buffer.speech_started' });
+  });
+  expect(ws.sent.find(e => e.type === 'conversation.item.truncate')).toMatchObject({ item_id: 'a0', content_index: 0, audio_end_ms: expect.any(Number) });
 
   // Spoken answer, then nobody replies within the follow-up window: session ends.
   await act(async () => {

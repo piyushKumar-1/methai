@@ -4,12 +4,12 @@ export { ScreenContextController, ScreenContextProvider, getScreenContext, useAs
 export type { ExecuteOptions, ScreenContextEvent, SettleOptions, SettleResult, VoicePhase, ScreenContextProviderProps, ToolCallResult, UseAssistant } from './ScreenContextProvider';
 export { AGENT_INSTRUCTIONS, SCREEN_TOOLS, SCROLL_TOOL, WAIT_TOOL, buildInstructions, anthropicTools, formatSnapshot, isScreenTool, openAITools, toolCallToAction } from './llm';
 export type { AppContext, AppFlow, AppScreenInfo, JSONSchemaObject, ToolSpec } from './llm';
-export { runAgent, runAgentFollowUp } from './agent';
+export { requestText, runAgent, runAgentFollowUp } from './agent';
 export { openAIChatModel } from './openai';
 export type { OpenAIChatModelOptions } from './openai';
-export type { AgentModel, ModelToolCall, ModelToolResult, ModelTurn, RunAgentOptions } from './agent';
+export type { AgentModel, ModelToolCall, ModelToolResult, ModelTurn, RunAgentOptions, SpokenRequest, UserRequest } from './agent';
 export { DEFAULT_STOP_PHRASES, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, VoiceAssistant } from './assistant';
-export type { AssistantConfig, AssistantMessage, HeardSpeech, ConversationMode, SessionStart, AssistantState, AssistantStatus, RealtimeVoiceModel, VoiceIO } from './assistant';
+export type { AssistantConfig, AssistantMessage, HeardSpeech, ListenOptions, SpeakResult, ConversationMode, SessionStart, AssistantState, AssistantStatus, RealtimeVoiceModel, VoiceIO } from './assistant';
 export { openAIRealtimeModel } from './realtime';
 export type { OpenAIRealtimeOptions, PcmAudioIO, RealtimeConnection } from './realtime';
 export { floatToPcm16Base64, pcm16Base64ToFloat, resample } from './pcm';
@@ -21,8 +21,8 @@ export type { AssistantOverlayProps, AssistantPosition, AssistantTheme } from '.
 export { toCaptionText, typedSoFar } from './captions';
 export { deviceVoice } from './deviceVoice';
 export type { DeviceVoice, DeviceVoiceOptions, RecognizerResults, SpeechRecognizerModule, TextToSpeechModule } from './deviceVoice';
-export { baseLanguage, canSpeak, isInterruption, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho } from './speech';
-export type { TtsVoiceInfo } from './speech';
+export { baseLanguage, canSpeak, endOfTurnDelay, isInterruption, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho } from './speech';
+export type { EndOfTurnOptions, TtsVoiceInfo } from './speech';
 export { withConfirmationGuard, withModelLogging, withModelTimeout } from './modelWrappers';
 export type { ConfirmationGuardOptions } from './modelWrappers';
 export type { AssistantButtonProps } from './AssistantButton';

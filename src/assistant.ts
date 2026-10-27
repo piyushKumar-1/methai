@@ -1,15 +1,30 @@
-import { runAgent, runAgentFollowUp, type AgentModel } from './agent';
+import { runAgent, runAgentFollowUp, type AgentModel, type UserRequest } from './agent';
 import { buildInstructions, SCREEN_TOOLS, type AppContext, type ToolSpec } from './llm';
 import type { ScreenContextController, ToolCallResult } from './ScreenContextProvider';
+import { endOfTurnDelay, type EndOfTurnOptions } from './speech';
+
+export interface ListenOptions {
+  /** Silence (ms) after `transcript` that ends the user's turn: short when it sounds finished. */
+  endOfTurnDelay?: (transcript: string) => number;
+}
+
+export interface SpeakResult {
+  /** The user stopped it by voice (a stop word while it talked). */
+  interrupted?: boolean;
+  /** Characters of the text spoken before it stopped (through the word being said), if known. */
+  spokenChars?: number;
+}
 
 /** Speech-to-text + text-to-speech, e.g. on-device recognizers (see example/voice-adapters.ts). */
 export interface VoiceIO {
-  speak(text: string, signal: AbortSignal): Promise<void>;
+  /** Resolves when done or cut off; report a voice interruption and how far it got, if known. */
+  speak(text: string, signal: AbortSignal): Promise<void | SpeakResult>;
   /**
    * Listens until the user stops talking and resolves with the final transcript ('' if nothing).
-   * `onLevel` takes the mic loudness (0–1) for visuals, if the engine reports it.
+   * `onLevel` takes the mic loudness (0–1) for visuals, if the engine reports it. End the turn
+   * after `options.endOfTurnDelay(transcript)` of silence when given.
    */
-  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<string | HeardSpeech>;
+  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void, options?: ListenOptions): Promise<string | HeardSpeech>;
   /** Optional: loudness (0–1) of the speech being played, for visuals. */
   onSpeakingLevel?: (listener: (level: number) => void) => () => void;
 }
@@ -19,6 +34,11 @@ export interface HeardSpeech {
   text: string;
   /** Other readings ("to know my office", "to know Atri office"), given to the model to resolve mishearings. */
   alternatives?: string[];
+  /**
+   * The recording itself (base64), for models that hear speech (e.g. xor-* over chat
+   * completions): they get the audio, with `text` as the on-device reading.
+   */
+  audio?: { data: string; format: 'wav' | 'mp3' };
 }
 
 /**
@@ -179,6 +199,8 @@ export type AssistantConfig = {
   maxTurns?: number;
   /** 'single' mode: when an answer ends with a question, listen for the reply up to this many times. Default 3. */
   maxFollowUps?: number;
+  /** How long a pause ends the user's turn (word-aware: longer after "and…", "um…", digits). */
+  endOfTurn?: EndOfTurnOptions;
 } & ({ voice: VoiceIO; model: AgentModel } | { realtime: RealtimeVoiceModel });
 
 export type AssistantState = 'idle' | 'greeting' | 'listening' | 'thinking' | 'speaking';
@@ -278,8 +300,11 @@ export class VoiceAssistant {
     if (text.trim()) this.set({ log: [...this.status.log, { role, text: text.trim() }].slice(-MAX_LOG) });
   }
 
-  /** Speaks, but can be cut short with interrupt() without ending the session. */
-  private async speak(voice: VoiceIO, text: string, signal: AbortSignal): Promise<void> {
+  /**
+   * Speaks, but can be cut short with interrupt() (or by voice) without ending the session.
+   * `onCut` hears how much was said when the user cut it off.
+   */
+  private async speak(voice: VoiceIO, text: string, signal: AbortSignal, onCut?: (heard?: string) => void): Promise<void> {
     this.addToLog('assistant', text);
     const offLevel = voice.onSpeakingLevel?.(level => this.controller.reportVoice('speaking', level));
     const speech = new AbortController();
@@ -287,7 +312,12 @@ export class VoiceAssistant {
     signal.addEventListener('abort', onAbort, { once: true });
     this.interruptHandler = () => speech.abort();
     try {
-      await voice.speak(text, speech.signal);
+      const result = (await voice.speak(text, speech.signal)) || undefined;
+      const cut = result?.interrupted || (speech.signal.aborted && !signal.aborted);
+      if (cut && onCut) {
+        const chars = result?.spokenChars;
+        onCut(chars === undefined ? undefined : chars >= text.length ? text : text.slice(0, chars).trim());
+      }
     } finally {
       offLevel?.();
       this.interruptHandler = null;
@@ -318,11 +348,13 @@ export class VoiceAssistant {
         mic.abort();
         resolve({ text });
       };
+      const endOfTurn = this.config.endOfTurn;
       voice
         .listen(
           mic.signal,
           partial => this.set({ transcript: partial }),
           level => this.controller.reportVoice('listening', level),
+          { endOfTurnDelay: t => endOfTurnDelay(t, endOfTurn) },
         )
         .then(heard => resolve(typeof heard === 'string' ? { text: heard } : heard), reject);
     }).finally(() => {
@@ -388,13 +420,13 @@ export class VoiceAssistant {
       let firstScreen: string | undefined = screen;
       // Continues the conversation when there is a clean one to continue, else starts one. A call
       // that fails or is cut off can leave the history mid-exchange, so it is only kept on success.
-      const ask = async (request: string) => {
+      const ask = async (request: UserRequest) => {
         const live = this.conversation?.model === agentModel && !!agentModel.followUp;
         const before = this.conversation?.lastScreen;
         this.conversation = null;
         const screenNow = firstScreen ?? (await this.controller.describe());
         const note = live && before ? screenChangeNote(before, screenNow) : '';
-        if (note) request = `${note}\n${request}`;
+        if (note) request = typeof request === 'string' ? `${note}\n${request}` : { ...request, transcript: `${note}\n${request.transcript ?? ''}` };
         const callOpts = {
           ...opts,
           screen: screenNow,
@@ -465,7 +497,8 @@ export class VoiceAssistant {
         this.set({ state: 'thinking' });
         // Later turns continue the same conversation, so "and one more" or "yes" make sense.
         try {
-          answer = await ask(requestWithAlternatives(heard));
+          const text = requestWithAlternatives(heard);
+          answer = await ask(heard.audio ? { audio: heard.audio.data, format: heard.audio.format, transcript: text } : text);
           failures = 0;
         } catch (e: any) {
           // A failed turn (the model unreachable, say) is told and the user can try again; only
@@ -476,7 +509,8 @@ export class VoiceAssistant {
         await this.progressSpeech;
         if (answer) {
           this.set({ state: 'speaking' });
-          await this.speak(voice, answer, signal);
+          // Cut off: the model's history keeps only what the user heard.
+          await this.speak(voice, answer, signal, heard => agentModel.interrupted?.(heard));
         }
       }
     } catch (e: any) {

@@ -1,4 +1,4 @@
-import { canSpeak, deviceVoice, isInterruption, isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type RecognizerResults, type SpeechRecognizerModule, type TextToSpeechModule } from '../src';
+import { canSpeak, deviceVoice, endOfTurnDelay, isInterruption, isNoSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type RecognizerResults, type SpeechRecognizerModule, type TextToSpeechModule } from '../src';
 
 const voice = (id: string, language: string, quality = 300, extra = {}) => ({
   id,
@@ -185,7 +185,7 @@ describe('deviceVoice', () => {
     rec.emit('partial', ['your destination is now next is called']); // its own voice, garbled
     expect(stop).not.toHaveBeenCalled();
     rec.emit('partial', ['your destination is now next is called stop']);
-    await speaking;
+    expect(await speaking).toEqual({ interrupted: true }); // so the assistant can trim its history
     expect(stop).toHaveBeenCalled();
     const next = io.listen(signal);
     await new Promise(r => setTimeout(r, 10));
@@ -212,6 +212,25 @@ describe('deviceVoice', () => {
     }
   });
 
+  test('a turn ends after the delay the assistant asks for (word-aware), unless endOfSpeechMs is fixed', async () => {
+    const run = async (fixed?: number) => {
+      const rec = fakeRecognizer();
+      const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0, ...(fixed !== undefined && { endOfSpeechMs: fixed }) });
+      const started = Date.now();
+      const heard = io.listen(signal, undefined, undefined, { endOfTurnDelay: t => (t.endsWith('and') ? 400 : 20) });
+      await new Promise(r => setTimeout(r, 0));
+      rec.emit('partial', ['add apples and']);
+      await new Promise(r => setTimeout(r, 100));
+      rec.emit('partial', ['add apples and bananas']);
+      return { text: (await heard).text, ms: Date.now() - started };
+    };
+    const adaptive = await run();
+    expect(adaptive.text).toBe('add apples and bananas'); // waited through the pause after "and"
+    expect(adaptive.ms).toBeLessThan(300);
+    const fixed = await run(50);
+    expect(fixed.text).toBe('add apples and'); // a fixed 50ms cut it off
+  });
+
   test("the recognizer's other guesses come back as alternatives", async () => {
     const rec = fakeRecognizer();
     const io = deviceVoice({ recognizer: rec, tts, locale: () => 'en-IN', micOpenDelayMs: 0 });
@@ -221,4 +240,14 @@ describe('deviceVoice', () => {
     rec.error('7');
     expect(await heard).toEqual({ text: 'to know my three office', alternatives: ['to know my office', 'office', 'to know Atri office'] });
   });
+});
+
+test('end of turn: waits longer when the user sounds unfinished', () => {
+  expect(endOfTurnDelay('add two apples and')).toBe(2200);
+  expect(endOfTurnDelay('my email is um')).toBe(2200);
+  expect(endOfTurnDelay('my phone number is 98 45')).toBe(2200);
+  expect(endOfTurnDelay('add two apples to the cart')).toBe(650);
+  expect(endOfTurnDelay('what is in my cart?')).toBe(650);
+  expect(endOfTurnDelay('checkout')).toBe(1100);
+  expect(endOfTurnDelay('add apples', { defaultMs: 900 })).toBe(900);
 });

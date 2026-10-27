@@ -1,8 +1,15 @@
 // Wrappers around any AgentModel: a time limit, a debug trace, and an optional hard rule that some
 // controls are only pressed after the user said yes.
-import type { AgentModel, ModelToolCall, ModelTurn } from './agent';
+import { requestText, type AgentModel, type ModelToolCall, type ModelTurn, type UserRequest } from './agent';
 import { parseArgs } from './llm';
 import { getScreenContext } from './ScreenContextProvider';
+
+/** Passes `interrupted` through to the wrapped model, when it has one. */
+const forwardInterrupted = (model: AgentModel) => model.interrupted && { interrupted: (heard?: string) => model.interrupted!(heard) };
+
+/** A request for the log: the text, and the size of a recording rather than its bytes. */
+const describeRequest = (r: UserRequest) =>
+  typeof r === 'string' ? JSON.stringify(r) : `(audio ${r.format}, ${Math.round((r.audio.length * 3) / 4 / 1024)} KB) ${JSON.stringify(r.transcript ?? '')}`;
 
 /** Fails a model call that takes longer than `ms`, so a stuck backend ends in an error, not silence. */
 export function withModelTimeout(model: AgentModel, ms: number): AgentModel {
@@ -24,7 +31,8 @@ export function withModelTimeout(model: AgentModel, ms: number): AgentModel {
   return {
     start: (request, screen, signal, instructions) => timed(model.start(request, screen, signal, instructions)),
     continue: (results, signal) => timed(model.continue(results, signal)),
-    ...(followUp && { followUp: (reply: string, screen: string, signal: AbortSignal) => timed(followUp.call(model, reply, screen, signal)) }),
+    ...(followUp && { followUp: (reply: UserRequest, screen: string, signal: AbortSignal) => timed(followUp.call(model, reply, screen, signal)) }),
+    ...forwardInterrupted(model),
   };
 }
 
@@ -52,7 +60,7 @@ export function withModelLogging(model: AgentModel, log: (message: string) => vo
   const { followUp } = model;
   return {
     start: (request, screen, signal, instructions) => {
-      log(`request ${JSON.stringify(request)}; screen:\n${screen}`);
+      log(`request ${describeRequest(request)}; screen:\n${screen}`);
       return logged('start', model.start(request, screen, signal, instructions));
     },
     continue: (results, signal) => {
@@ -60,9 +68,15 @@ export function withModelLogging(model: AgentModel, log: (message: string) => vo
       return logged('continue', model.continue(results, signal));
     },
     ...(followUp && {
-      followUp: (reply: string, screen: string, signal: AbortSignal) => {
-        log(`follow-up ${JSON.stringify(reply)}`);
+      followUp: (reply: UserRequest, screen: string, signal: AbortSignal) => {
+        log(`follow-up ${describeRequest(reply)}`);
         return logged('follow-up', followUp.call(model, reply, screen, signal));
+      },
+    }),
+    ...(model.interrupted && {
+      interrupted: (heard?: string) => {
+        log(`interrupted; heard ${JSON.stringify(heard ?? '?')}`);
+        model.interrupted!(heard);
       },
     }),
   };
@@ -135,10 +149,11 @@ export function withConfirmationGuard(model: AgentModel, opts: ConfirmationGuard
     },
     continue: async (results, signal) => guard(await model.continue(results, signal), signal),
     ...(followUp && {
-      followUp: async (reply: string, screen: string, signal: AbortSignal) => {
-        granted = isConfirming(reply);
+      followUp: async (reply: UserRequest, screen: string, signal: AbortSignal) => {
+        granted = isConfirming(requestText(reply));
         return guard(await followUp.call(model, reply, screen, signal), signal);
       },
     }),
+    ...forwardInterrupted(model),
   };
 }

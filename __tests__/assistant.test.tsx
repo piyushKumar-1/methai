@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AgentGlow, AssistantButton, buildInstructions, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
+import { AgentGlow, AssistantButton, buildInstructions, openAIChatModel, requestText, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, ScreenContextProvider, type AgentModel, type AssistantConfig, type SessionStart, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -35,7 +35,7 @@ function scriptedModel(seen: string[]): AgentModel {
   let step = 0;
   return {
     async start(request, screen, _signal, instructions) {
-      seen.push(request, screen);
+      seen.push(requestText(request), screen);
       expect(instructions).toContain('You are a voice assistant');
       return { toolCalls: [{ id: 't1', name: 'type_text', input: { element_id: 'input_email', text: 'a@b.co' } }] };
     },
@@ -134,7 +134,7 @@ test('a question from the model gets a spoken follow-up in the same conversation
     start: async () => ({ text: 'Should I log you in with a@b.co?', toolCalls: [] }),
     continue: async () => ({ text: 'You are logged in.', toolCalls: [] }),
     followUp: async reply => {
-      followUps.push(reply);
+      followUps.push(requestText(reply));
       return { toolCalls: [{ id: 'f1', name: 'press_element', input: { element_id: 'btn_log_in' } }] };
     },
   };
@@ -155,9 +155,9 @@ test('continuous: keeps listening after every answer until a stop phrase', async
   const requests: string[] = [];
   let step = 0;
   const model: AgentModel = {
-    start: async request => (requests.push(request), { toolCalls: [{ id: 'a', name: 'type_text', input: { element_id: 'input_email', text: 'a@b.co' } }] }),
+    start: async request => (requests.push(requestText(request)), { toolCalls: [{ id: 'a', name: 'type_text', input: { element_id: 'input_email', text: 'a@b.co' } }] }),
     continue: async () => ({ text: step++ === 0 ? 'Email entered.' : 'Logged in.', toolCalls: [] }),
-    followUp: async reply => (requests.push(reply), { toolCalls: [{ id: 'b', name: 'press_element', input: { element_id: 'btn_log_in' } }] }),
+    followUp: async reply => (requests.push(requestText(reply)), { toolCalls: [{ id: 'b', name: 'press_element', input: { element_id: 'btn_log_in' } }] }),
   };
   const { renderer, provider } = await mount({ voice, model, farewell: 'Bye!' });
   await act(async () => {
@@ -241,9 +241,9 @@ test('a greeting function can hand the opening to the model, which continues a r
   const starts: string[] = [];
   const followUps: string[] = [];
   const model: AgentModel = {
-    start: async request => (starts.push(request), { text: 'Where to?', toolCalls: [] }),
+    start: async request => (starts.push(requestText(request)), { text: 'Where to?', toolCalls: [] }),
     continue: jest.fn(),
-    followUp: async reply => (followUps.push(reply), { text: reply === OPENING_REQUEST ? 'Still want that cab?' : 'Booked.', toolCalls: [] }),
+    followUp: async reply => (followUps.push(requestText(reply)), { text: reply === OPENING_REQUEST ? 'Still want that cab?' : 'Booked.', toolCalls: [] }),
   };
   const sessions: SessionStart[] = [];
   const greeting = (session: SessionStart) => (sessions.push(session), session.resumed ? undefined : 'Hi!');
@@ -342,7 +342,7 @@ test('user context goes into the system prompt and recognizer alternatives into 
   };
   const seen: { request: string; instructions: string }[] = [];
   const model: AgentModel = {
-    start: async (request, _screen, _signal, instructions) => (seen.push({ request, instructions }), { text: 'Namma Yatri office?', toolCalls: [] }),
+    start: async (request, _screen, _signal, instructions) => (seen.push({ request: requestText(request), instructions }), { text: 'Namma Yatri office?', toolCalls: [] }),
     continue: jest.fn(),
     followUp: async () => ({ text: 'Okay.', toolCalls: [] }),
   };
@@ -361,4 +361,69 @@ test('requestWithAlternatives skips duplicates and empty guesses', () => {
   expect(requestWithAlternatives({ text: 'yes' })).toBe('yes');
   expect(requestWithAlternatives({ text: 'yes', alternatives: ['Yes', ' ', 'yeah'] })).toBe('yes\n(Speech recognition, other possible readings: "yeah")');
   expect(buildInstructions(undefined, 'Base.', '  ')).toBe('Base.');
+});
+
+test('recorded speech reaches the model as audio, and later turns resend it as text', async () => {
+  const heard = [
+    { text: 'type a@b.co', audio: { data: 'UklGRg==', format: 'wav' as const } },
+    { text: 'log in', audio: { data: 'UklGRh==', format: 'wav' as const } },
+    'bye',
+  ];
+  const voice: VoiceIO = { speak: async () => {}, listen: async () => heard.shift() ?? '' };
+  const bodies: any[] = [];
+  const replies = [
+    { tool_calls: [{ id: 'a', type: 'function', function: { name: 'type_text', arguments: '{"element_id":"input_email","text":"a@b.co"}' } }] },
+    { content: 'Typed it.' },
+    { tool_calls: [{ id: 'b', type: 'function', function: { name: 'press_element', arguments: '{"element_id":"btn_log_in"}' } }] },
+    { content: 'Logged in.' },
+  ];
+  const realFetch = global.fetch;
+  global.fetch = jest.fn(async (_url: any, init: any) => {
+    bodies.push(JSON.parse(init.body));
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: replies.shift() }] }) };
+  }) as any;
+  try {
+    const { renderer, provider } = await mount({ voice, model: openAIChatModel({ endpoint: '/chat', model: 'xor-latest-custom' }) });
+    await act(async () => {
+      await provider.assistant!.start();
+    });
+    expect(log).toEqual(['login:a@b.co']);
+    const first = bodies[0].messages[1];
+    expect(first.content[0]).toEqual({ type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } });
+    expect(first.content[1].text).toContain('type a@b.co');
+    expect(first.textOnly).toBeUndefined();
+    const followUp = bodies[2].messages;
+    expect(followUp[1].content).toMatch(/^type a@b\.co\n\nCurrent screen:/);
+    expect(followUp.at(-1).content[0].input_audio.data).toBe('UklGRh==');
+    await act(async () => renderer.unmount());
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
+test('a cut-off answer is trimmed in the model history to what was heard', async () => {
+  const answer = 'Your cart has two apples and one banana, the total is 300 rupees.';
+  const heard = ["what's in my cart", 'thanks'];
+  const interrupted: (string | undefined)[] = [];
+  const listenOptions: any[] = [];
+  const voice: VoiceIO = {
+    // The voice stops itself on "wait", having said 25 characters.
+    speak: async text => (text === answer ? { interrupted: true, spokenChars: 25 } : undefined),
+    listen: async (_signal, _partial, _level, options) => (listenOptions.push(options), heard.shift() ?? ''),
+  };
+  const model: AgentModel = {
+    start: async () => ({ text: answer, toolCalls: [] }),
+    continue: jest.fn(),
+    followUp: async () => ({ text: '', toolCalls: [] }),
+    interrupted: h => void interrupted.push(h),
+  };
+  const { renderer, provider } = await mount({ voice, model });
+  await act(async () => {
+    await provider.assistant!.start();
+  });
+  expect(interrupted).toEqual([answer.slice(0, 25).trim()]);
+  // Listening uses the word-aware end of turn.
+  expect(listenOptions[0].endOfTurnDelay('add apples and')).toBe(2200);
+  expect(listenOptions[0].endOfTurnDelay('add two apples please now')).toBe(650);
+  await act(async () => renderer.unmount());
 });

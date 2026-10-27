@@ -13,23 +13,26 @@ import {
   type AssistantConfig,
 } from 'react-native-screen-context';
 import { APP_CONTEXT } from './src/appContext';
-import { CHAT_MODELS, REALTIME_MODELS, SERVER_URL } from './src/config';
+import { CHAT_MODELS, CLOUD_VOICE_MODELS, REALTIME_MODELS, SERVER_URL } from './src/config';
 import { devicePcmAudio } from './src/pcm-audio';
 import { deviceVoice, rankedVoices, type RankedVoice } from './src/voice';
 
 type Tab = 'Login' | 'Shop' | 'Settings';
-type Mode = 'pipeline' | 'realtime';
+type Mode = 'cloud' | 'pipeline' | 'realtime';
 
 const GREETING = 'Hi! How can I help?';
 // Read on every utterance, so picking a voice in Settings applies immediately.
 let selectedVoice: string | undefined;
 const voice = deviceVoice({ voice: () => selectedVoice });
+// Same mic + speaker, but the recorded utterance goes to the model, which hears it itself.
+const cloudVoice = deviceVoice({ voice: () => selectedVoice, sendAudio: true });
 let pcmAudio: ReturnType<typeof devicePcmAudio> | undefined;
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('Shop');
-  const [mode, setMode] = useState<Mode>('pipeline');
+  const [mode, setMode] = useState<Mode>('cloud');
   const [chatModel, setChatModel] = useState<string>(CHAT_MODELS[0]);
+  const [cloudModel, setCloudModel] = useState<string>(CLOUD_VOICE_MODELS[0]);
   const [realtimeModel, setRealtimeModel] = useState<string>(REALTIME_MODELS[0]);
 
   const assistant = useMemo<AssistantConfig>(() => {
@@ -48,10 +51,12 @@ export default function App() {
       greeting: GREETING,
       app: APP_CONTEXT,
       noInputReply: "Sorry, I didn't catch that.",
-      voice,
-      model: openAIChatModel({ endpoint: `${SERVER_URL}/chat`, model: chatModel }),
+      // "Sure, adding those." while it works, instead of silence.
+      speakProgress: true,
+      voice: mode === 'cloud' ? cloudVoice : voice,
+      model: openAIChatModel({ endpoint: `${SERVER_URL}/chat`, model: mode === 'cloud' ? cloudModel : chatModel }),
     };
-  }, [mode, chatModel, realtimeModel]);
+  }, [mode, chatModel, cloudModel, realtimeModel]);
 
   return (
     <ScreenContextProvider assistant={assistant} getScreenName={() => tab}>
@@ -67,6 +72,8 @@ export default function App() {
               setMode={setMode}
               chatModel={chatModel}
               setChatModel={setChatModel}
+              cloudModel={cloudModel}
+              setCloudModel={setCloudModel}
               realtimeModel={realtimeModel}
               setRealtimeModel={setRealtimeModel}
             />
@@ -208,6 +215,8 @@ function SettingsScreen(props: {
   setMode: (m: Mode) => void;
   chatModel: string;
   setChatModel: (m: string) => void;
+  cloudModel: string;
+  setCloudModel: (m: string) => void;
   realtimeModel: string;
   setRealtimeModel: (m: string) => void;
 }) {
@@ -234,7 +243,8 @@ function SettingsScreen(props: {
           <Text style={styles.label}>Mode</Text>
           <Chips
             options={[
-              ['pipeline', 'On-device voice + chat model'],
+              ['cloud', 'Cloud voice model (hears your audio)'],
+              ['pipeline', 'On-device speech + chat model'],
               ['realtime', 'Voice model (realtime)'],
             ]}
             value={props.mode}
@@ -243,10 +253,12 @@ function SettingsScreen(props: {
           <Text style={styles.label}>{props.mode === 'pipeline' ? 'Chat model' : 'Voice model'}</Text>
           {props.mode === 'pipeline' ? (
             <Chips options={CHAT_MODELS.map(m => [m, m])} value={props.chatModel} onChange={props.setChatModel} />
+          ) : props.mode === 'cloud' ? (
+            <Chips options={CLOUD_VOICE_MODELS.map(m => [m, m])} value={props.cloudModel} onChange={props.setCloudModel} />
           ) : (
             <Chips options={REALTIME_MODELS.map(m => [m, m])} value={props.realtimeModel} onChange={props.setRealtimeModel} />
           )}
-          {props.mode === 'pipeline' && <VoicePicker />}
+          {props.mode !== 'realtime' && <VoicePicker />}
           <Text style={[styles.muted, { marginTop: 12 }]}>Server: {SERVER_URL}</Text>
         </View>
       </AIIgnore>

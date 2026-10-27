@@ -21,7 +21,8 @@ Think before acting:
 Talk little. Replies are spoken aloud:
 - Usually one short sentence (about 15 words). Up to three options when the user has to choose.
 - Don't narrate your steps, repeat the user's request back, describe the screen, or offer more help at the end.
-- Plain speech: no markdown, lists, emoji or ids.`;
+- Plain speech: no markdown, lists, emoji or ids.
+- If you were interrupted, the user heard only part of your answer: respond to what they say next instead of finishing it.`;
 
 function describeElement(el: ScreenElement): string {
   const parts: string[] = [`[${el.id}]`];

@@ -1,4 +1,4 @@
-import type { AgentModel, ModelTurn } from './agent';
+import { requestText, type AgentModel, type ModelTurn, type UserRequest } from './agent';
 import { openAITools } from './llm';
 
 export interface OpenAIChatModelOptions {
@@ -30,6 +30,28 @@ export interface OpenAIChatModelOptions {
 }
 
 type ChatMessage = Record<string, unknown> & { role: string };
+
+/** A user message: plain text, or the recorded audio (input_audio) plus the screen as text. */
+function userMessage(request: UserRequest, screen: string): ChatMessage {
+  const context = `Current screen:\n${screen}`;
+  if (typeof request === 'string') return { role: 'user', content: `${request}\n\n${context}` };
+  const reading = request.transcript ? `\nOn-device speech recognition read it as (may be wrong; trust the audio): ${request.transcript}` : '';
+  return {
+    role: 'user',
+    content: [
+      { type: 'input_audio', input_audio: { data: request.audio, format: request.format } },
+      { type: 'text', text: `(The request is the audio above.)${reading}\n\n${context}` },
+    ],
+    // Kept locally (not sent) to replace the audio in later requests.
+    textOnly: `${requestText(request) || '(spoken request)'}\n\n${context}`,
+  };
+}
+
+/** Earlier spoken turns are resent as their transcripts, so the history doesn't carry every recording. */
+const withoutOldAudio = (messages: ChatMessage[]) =>
+  messages.map(({ textOnly, ...m }) => (typeof textOnly === 'string' ? { ...m, content: textOnly } : m));
+
+const forWire = (messages: ChatMessage[]) => messages.map(({ textOnly, ...m }) => m);
 
 /** A failure another model (or a moment later) may not have: rate limits, overload, server errors. */
 class RetryableModelError extends Error {}
@@ -64,7 +86,7 @@ export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
       res = await fetch(opts.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...opts.headers },
-        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', ...opts.extraBody }),
+        body: JSON.stringify({ model, messages: forWire(messages), tools, tool_choice: 'auto', ...opts.extraBody }),
         signal: attempt.signal,
       });
       json = await res.json().catch(() => null);
@@ -112,7 +134,7 @@ export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
     start(request, screen, signal, instructions) {
       messages = [
         { role: 'system', content: opts.system ?? instructions },
-        { role: 'user', content: `${request}\n\nCurrent screen:\n${screen}` },
+        userMessage(request, screen),
       ];
       return send(signal);
     },
@@ -121,8 +143,12 @@ export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
       return send(signal);
     },
     followUp(reply, screen, signal) {
-      messages.push({ role: 'user', content: `${reply}\n\nCurrent screen:\n${screen}` });
+      messages = [...withoutOldAudio(messages), userMessage(reply, screen)];
       return send(signal);
+    },
+    interrupted(heard) {
+      const last = [...messages].reverse().find(m => m.role === 'assistant' && !m.tool_calls);
+      if (last) last.content = heard ? `${heard}… (interrupted by the user; they heard only this much)` : `${last.content} (interrupted by the user; they may not have heard all of it)`;
     },
   };
 }

@@ -210,6 +210,34 @@ them from the loudspeaker, keeps one-word answers that the recognizer reports as
 mic loudness for the glow, and never hangs on an engine that dies mid-utterance. The helpers it uses
 (`pickBestVoice`, `stripEcho`, `micLevelFromRms`, …) are exported for your own adapters.
 
+Turn-taking, which is most of what makes a voice agent feel natural:
+
+- **Pauses depend on the words.** The assistant passes `endOfTurnDelay` to `listen`: about 0.65 s
+  of silence after a finished-sounding sentence, about 2.2 s after "and…", "um…" or digits being
+  read out, so people aren't cut off mid-thought. Tune it with `endOfTurn: { completeMs, defaultMs,
+  incompleteMs }` in the assistant config; a fixed `endOfSpeechMs` on `deviceVoice` overrides it.
+- **The model knows what you heard.** When an answer is cut off (tap or stop word), the model's
+  history keeps only the part that was spoken (`AgentModel.interrupted`; voices report it from
+  `speak` as `{ interrupted, spokenChars }`). Realtime sessions send `conversation.item.truncate`.
+- **No dead air.** With `speakProgress: true`, the model's short "Sure, adding those." is spoken
+  while its actions run.
+
+### Models that hear audio (cloud voice)
+
+Some models take the recording itself (`input_audio` in chat completions), not a transcript: they
+hear accents, names and mixed languages better than on-device recognition. Return the recording
+with what was heard, and `openAIChatModel` sends the audio, with the on-device reading as a hint:
+
+```ts
+listen: async signal => ({ text: onDeviceGuess, audio: { data: base64Wav, format: 'wav' } }),
+// …
+model: openAIChatModel({ endpoint: `${API}/chat`, model: 'xor-latest-custom' }),
+```
+
+`text` is still shown in the UI and checked for stop phrases, and it replaces the audio when later
+turns resend the history. The demo's `deviceVoice({ sendAudio: true })` (Expo) records the
+utterance while the recognizer runs (`expo-speech-recognition` with `recordingOptions.persist`).
+
 ### Model wrappers
 
 - `withModelTimeout(model, ms)`: a stuck backend ends in an error instead of silence.
@@ -315,7 +343,8 @@ Two ways to plug in voice:
   owns the mic and speaker. It gets the greeting, the screen and the four tools, and calls
   `onToolCall(name, input)` for each action. `openAIRealtimeModel()` implements the OpenAI Realtime
   WebSocket protocol, which LiteLLM proxies also serve at `/v1/realtime`. It handles the greeting,
-  server-side voice activity detection, interrupting the model mid-answer (barge-in), tool calls,
+  server-side turn detection (`semantic_vad` by default, which waits longer after "umm…"; falls
+  back to silence-based `server_vad`), interrupting the model mid-answer (barge-in), tool calls,
   and a short follow-up window after each answer so the user can reply to a confirmation question.
   There's a mic/speaker adapter in [`example/pcm-audio.ts`](example/pcm-audio.ts)
   (`react-native-audio-api`).

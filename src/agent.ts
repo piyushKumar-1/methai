@@ -1,6 +1,23 @@
 import { buildInstructions, type AppContext } from './llm';
 import type { ScreenContextController } from './ScreenContextProvider';
 
+/**
+ * The user's request as recorded audio, for models that take speech input (e.g. the gateway's
+ * xor-* models over chat completions). `transcript` is the on-device reading: shown in the UI,
+ * checked for stop phrases, and sent to models that can't hear audio.
+ */
+export interface SpokenRequest {
+  /** Base64 audio. */
+  audio: string;
+  format: 'wav' | 'mp3';
+  transcript?: string;
+}
+
+export type UserRequest = string | SpokenRequest;
+
+/** The text of a request: itself, or the transcript of a spoken one. */
+export const requestText = (r: UserRequest): string => (typeof r === 'string' ? r : (r.transcript ?? ''));
+
 export interface ModelToolCall {
   id: string;
   name: string;
@@ -25,10 +42,15 @@ export interface ModelTurn {
  */
 export interface AgentModel {
   /** `instructions` is the system prompt (agent rules + app context) for this session. */
-  start(request: string, screen: string, signal: AbortSignal, instructions: string): Promise<ModelTurn>;
+  start(request: UserRequest, screen: string, signal: AbortSignal, instructions: string): Promise<ModelTurn>;
   continue(results: ModelToolResult[], signal: AbortSignal): Promise<ModelTurn>;
   /** The user's reply to the model's last answer, in the same conversation (e.g. "yes, check out"). */
-  followUp?(reply: string, screen: string, signal: AbortSignal): Promise<ModelTurn>;
+  followUp?(reply: UserRequest, screen: string, signal: AbortSignal): Promise<ModelTurn>;
+  /**
+   * The user cut the last answer off and heard only `heard` of it (undefined: not known how much).
+   * Rewrite the history to match, so the model doesn't assume the rest was heard.
+   */
+  interrupted?(heard?: string): void;
 }
 
 export interface RunAgentOptions {
@@ -48,13 +70,13 @@ export interface RunAgentOptions {
 }
 
 /** Runs request → tool calls → actions → … until the model answers without tools. Returns its answer. */
-export function runAgent(controller: ScreenContextController, model: AgentModel, request: string, opts: RunAgentOptions = {}): Promise<string> {
+export function runAgent(controller: ScreenContextController, model: AgentModel, request: UserRequest, opts: RunAgentOptions = {}): Promise<string> {
   const instructions = buildInstructions(opts.app, opts.systemPrompt, opts.userContext);
   return drive(controller, model, opts, async (signal, screen) => model.start(request, screen, signal, instructions));
 }
 
 /** Continues the conversation of the last runAgent call with the user's reply. Needs `model.followUp`. */
-export function runAgentFollowUp(controller: ScreenContextController, model: AgentModel, reply: string, opts: RunAgentOptions = {}): Promise<string> {
+export function runAgentFollowUp(controller: ScreenContextController, model: AgentModel, reply: UserRequest, opts: RunAgentOptions = {}): Promise<string> {
   if (!model.followUp) throw new Error('This model does not support follow-ups.');
   return drive(controller, model, opts, (signal, screen) => model.followUp!(reply, screen, signal));
 }

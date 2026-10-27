@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import type { HeardSpeech, VoiceIO } from './assistant';
+import type { HeardSpeech, ListenOptions, VoiceIO } from './assistant';
 import { toCaptionText } from './captions';
 import { isInterruption, isNoSpeechError, isTransientSpeechError, micLevelFromRms, pickBestVoice, speechTimeoutMs, stripEcho, type TtsVoiceInfo } from './speech';
 
@@ -51,7 +51,10 @@ export interface DeviceVoiceOptions {
   speakable?: (text: string) => string;
   /** Speaking rate: Android multiplier (1 = normal), iOS AVSpeech scale (0.5 = normal). Default 1.08 / 0.53. */
   rate?: number;
-  /** Stop listening this long after the last new word. Default 900ms. */
+  /**
+   * Stop listening this long after the last new word. Default: the assistant's word-aware delay
+   * (short after a finished sentence, longer after "and…" or "um…"), else 900ms.
+   */
   endOfSpeechMs?: number;
   /** End a listening turn if nothing is said for this long. Default 8000ms. */
   noSpeechTimeoutMs?: number;
@@ -71,7 +74,7 @@ export interface DeviceVoiceOptions {
 }
 
 export interface DeviceVoice extends VoiceIO {
-  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<HeardSpeech>;
+  listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void, options?: ListenOptions): Promise<HeardSpeech>;
   /** Locales that have an installed text-to-speech voice. */
   installedLocales(): Promise<string[]>;
 }
@@ -97,6 +100,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   const { recognizer: rec, tts, locale, log = () => {} } = opts;
   const speakable = opts.speakable ?? toCaptionText;
   const endOfSpeechMs = opts.endOfSpeechMs ?? 900;
+  const fixedEndOfSpeech = opts.endOfSpeechMs !== undefined;
   const noSpeechTimeoutMs = opts.noSpeechTimeoutMs ?? 8000;
   const micOpenDelayMs = opts.micOpenDelayMs ?? 150;
   const bargeIn = opts.bargeIn ?? true;
@@ -152,7 +156,11 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
   }
 
   /** One recognizer session, started once the previous one has shut down. */
-  const startSession = async (label: string, onWords?: (text: string, session: Session) => void): Promise<Session> => {
+  const startSession = async (
+    label: string,
+    onWords?: (text: string, session: Session) => void,
+    endDelay: (text: string) => number = () => endOfSpeechMs,
+  ): Promise<Session> => {
     // A recognizer that died never answers stop/destroy, so don't wait for it forever.
     await Promise.race([teardown, sleep(600)]);
     let transcript = '';
@@ -206,7 +214,10 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       onWords?.(transcript, session);
       // On Android the final result is the end: that recognizer hears nothing more, so don't wait.
       if (kind === 'final' && Platform.OS === 'android') stopAfter(0, 'final result');
-      else stopAfter(endOfSpeechMs, `${endOfSpeechMs}ms without new words`);
+      else {
+        const ms = endDelay(transcript);
+        stopAfter(ms, `${ms}ms without new words`);
+      }
     };
     rec.onSpeechPartialResults = onText('partial');
     rec.onSpeechResults = onText('final');
@@ -276,6 +287,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       if (!(await ensureTts())) return;
       await prepareVoice(locale());
       let watch: { stop(): Promise<void> } | undefined;
+      let interrupted = false;
       await new Promise<void>(resolve => {
         const subscriptions = TTS_END_EVENTS.map(event => tts.addListener(event, () => settle()));
         const settle = () => {
@@ -305,19 +317,25 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         } catch (err) {
           fail(err);
         }
-        if (bargeIn) watch = watchForInterruption(say, stopSpeaking);
+        if (bargeIn)
+          watch = watchForInterruption(say, () => {
+            interrupted = true;
+            stopSpeaking();
+          });
       });
       await watch?.stop();
+      return { interrupted };
     },
 
-    async listen(signal, onPartial, onLevel) {
+    async listen(signal, onPartial, onLevel, options) {
       if (opts.requestMicPermission && !(await opts.requestMicPermission())) throw new Error('Microphone permission denied');
       // Only right after speaking: between silent listening turns every millisecond the mic is off
       // is a chance to miss a one-word "yes".
       const quietFor = Date.now() - spokeUntil;
       if (quietFor < micOpenDelayMs) await sleep(micOpenDelayMs - quietFor);
       if (signal.aborted) return { text: '' };
-      const session = await startSession('listen');
+      const endDelay = !fixedEndOfSpeech && options?.endOfTurnDelay;
+      const session = await startSession('listen', undefined, endDelay || undefined);
       session.attach(onPartial, onLevel);
       const onAbort = () => session.abort('aborted');
       signal.addEventListener('abort', onAbort, { once: true });

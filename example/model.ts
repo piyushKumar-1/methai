@@ -1,7 +1,7 @@
 // AgentModel over your backend (see server.ts). The app keeps the conversation history and the
 // backend holds the API key, so no key ships in the app.
 import type { BetaMessage, BetaMessageParam, BetaToolResultBlockParam, BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages';
-import type { AgentModel, ModelTurn } from '../src';
+import { requestText, type AgentModel, type ModelTurn } from '../src';
 
 export interface BackendModelOptions {
   /** POST endpoint that forwards { system, messages } to screenAgentTurn() and returns the message. */
@@ -40,7 +40,7 @@ export function backendModel({ endpoint, headers }: BackendModelOptions): AgentM
   return {
     start(request, screen, signal, instructions) {
       system = instructions;
-      messages = [{ role: 'user', content: `${request}\n\nCurrent screen:\n${screen}` }];
+      messages = [{ role: 'user', content: `${requestText(request)}\n\nCurrent screen:\n${screen}` }];
       return send(signal);
     },
     continue(results, signal) {
