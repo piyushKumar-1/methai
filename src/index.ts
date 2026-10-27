@@ -5,7 +5,7 @@ export type { ExecuteOptions, ScreenContextEvent, SettleOptions, SettleResult, V
 export { AGENT_INSTRUCTIONS, SCREEN_TOOLS, SCROLL_TOOL, WAIT_TOOL, buildInstructions, anthropicTools, formatSnapshot, isScreenTool, openAITools, toolCallToAction } from './llm';
 export type { AppContext, AppFlow, AppScreenInfo, JSONSchemaObject, ToolSpec } from './llm';
 export { runAgent, runAgentFollowUp } from './agent';
-export { openAIChatModel } from './openai';
+export { openAIChatModel, stripReasoning } from './openai';
 export type { OpenAIChatModelOptions } from './openai';
 export type { AgentModel, ModelToolCall, ModelToolResult, ModelTurn, RunAgentOptions } from './agent';
 export { DEFAULT_STOP_PHRASES, isStopPhrase, OPENING_REQUEST, requestWithAlternatives, screenChangeNote, VoiceAssistant } from './assistant';

@@ -36,6 +36,17 @@ class RetryableModelError extends Error {}
 
 const isRetryableStatus = (status: number) => status === 408 || status === 429 || status >= 500;
 
+/**
+ * The reply without any reasoning the model left in it. Some servers put a thinking model's
+ * reasoning in the content, as `<think>…</think>` or (when the template opened the tag) as
+ * everything up to a bare `</think>`; none of it should be shown or read aloud.
+ */
+export function stripReasoning(content: string): string {
+  const end = content.lastIndexOf('</think>');
+  const answer = end >= 0 ? content.slice(end + '</think>'.length) : content;
+  return answer.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trim();
+}
+
 /** AgentModel over OpenAI-style chat completions with function calling. */
 export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
   const tools = openAITools();
@@ -101,9 +112,11 @@ export function openAIChatModel(opts: OpenAIChatModelOptions): AgentModel {
     }
     const message = json.choices[0].message ?? {};
     const toolCalls: { id: string; function: { name: string; arguments: string } }[] = message.tool_calls ?? [];
-    messages.push({ role: 'assistant', content: message.content ?? '', ...(toolCalls.length && { tool_calls: toolCalls }) });
+    const text = typeof message.content === 'string' ? stripReasoning(message.content) : undefined;
+    // History keeps the clean reply too: echoing reasoning back only bloats later calls.
+    messages.push({ role: 'assistant', content: text ?? '', ...(toolCalls.length && { tool_calls: toolCalls }) });
     return {
-      text: typeof message.content === 'string' ? message.content.trim() : undefined,
+      text,
       toolCalls: toolCalls.map(c => ({ id: c.id, name: c.function.name, input: c.function.arguments })),
     };
   }
