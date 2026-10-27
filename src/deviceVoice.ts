@@ -68,10 +68,13 @@ export interface DeviceVoiceOptions {
   /**
    * Passed to the recognizer's `start` each time, e.g. engine-specific flags. Default none.
    */
-  recognizerOptions?: Record<string, unknown>;
+  recognizerOptions?: Record<string, unknown> | ((purpose: RecognizerPurpose) => Record<string, unknown> | undefined);
   /** Step-by-step trace (listen started, partials, why it ended, errors), for debugging. */
   log?: (message: string) => void;
 }
+
+/** Why a recognizer session runs: the user's turn, or listening for "stop" while it speaks. */
+export type RecognizerPurpose = 'listen' | 'interrupt';
 
 export interface DeviceVoice extends VoiceIO {
   listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void, options?: ListenOptions): Promise<HeardSpeech>;
@@ -160,6 +163,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     label: string,
     onWords?: (text: string, session: Session) => void,
     endDelay: (text: string) => number = () => endOfSpeechMs,
+    purpose: RecognizerPurpose = 'listen',
   ): Promise<Session> => {
     // A recognizer that died never answers stop/destroy, so don't wait for it forever.
     await Promise.race([teardown, sleep(600)]);
@@ -232,7 +236,8 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
     };
     stopAfter(noSpeechTimeoutMs, 'nothing said');
     log(`${label} started`);
-    (opts.recognizerOptions ? rec.start(locale(), opts.recognizerOptions) : rec.start(locale())).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
+    const options = typeof opts.recognizerOptions === 'function' ? opts.recognizerOptions(purpose) : opts.recognizerOptions;
+    (options ? rec.start(locale(), options) : rec.start(locale())).catch((err: unknown) => finish(new Error(String(err)), 'start failed'));
     return session;
   };
 
@@ -252,7 +257,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
           log(`interrupted: ${JSON.stringify(text)}`);
           s.abort('interrupted');
           interrupt();
-        });
+        }, undefined, 'interrupt');
         if (done) {
           session.abort('done speaking');
           return;
