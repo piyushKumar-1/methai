@@ -68,8 +68,10 @@ test('small helpers', () => {
   expect(micLevelFromRms(5)).toBe(0.5);
   expect(micLevelFromRms(-2)).toBe(0);
   expect(micLevelFromRms(undefined)).toBe(0);
-  expect(speechTimeoutMs('hi')).toBe(4000);
-  expect(speechTimeoutMs('x'.repeat(10_000))).toBe(30000);
+  expect(speechTimeoutMs('hi')).toBe(5000);
+  // A six-fare list (115 characters) gets well over the ~10s it takes to say.
+  expect(speechTimeoutMs('Auto 45 rupees, Meter Cab 38 rupees, AC Cab 120 rupees, Non-AC Mini 140 rupees, XL Cab 190 rupees, XL Plus 210 rupees?')).toBe(19000);
+  expect(speechTimeoutMs('x'.repeat(10_000))).toBe(45000);
   expect(canSpeak('kn-IN', ['en-US', 'kn_IN'])).toBe(true);
   expect(canSpeak('kn-IN', ['en-US'])).toBe(false);
 });
