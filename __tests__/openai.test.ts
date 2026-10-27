@@ -1,4 +1,4 @@
-import { openAIChatModel } from '../src';
+import { openAIChatModel, stripReasoning } from '../src';
 
 const reply = (content: string) => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content } }] }) });
 const failure = (status: number, message: string) => ({ ok: false, status, json: async () => ({ error: { message } }) });
@@ -64,4 +64,22 @@ test('closing the assistant aborts the call without trying fallbacks', async () 
   controller.abort();
   await expect(call).rejects.toThrow('Aborted');
   expect(modelsAsked()).toEqual(['a']);
+});
+
+test('reasoning left in the reply is never shown or read aloud', async () => {
+  // What glm-5.3 sends with thinking "disabled": the reasoning, a bare </think>, then the answer.
+  fetchMock.mockResolvedValueOnce(reply('The user wants to go home.\n\nI should ask which vehicle.</think>Auto ₹45 or Meter Cab ₹38?'));
+  const model = openAIChatModel({ endpoint: '/chat', model: 'glm' });
+  expect((await model.start('take me home', 's', signal, 'r')).text).toBe('Auto ₹45 or Meter Cab ₹38?');
+  fetchMock.mockResolvedValueOnce(reply('Booked.'));
+  await model.followUp!('auto', 's', signal);
+  const history = JSON.parse(fetchMock.mock.calls[1][1].body).messages;
+  expect(history[2]).toEqual({ role: 'assistant', content: 'Auto ₹45 or Meter Cab ₹38?' });
+});
+
+test('stripReasoning', () => {
+  expect(stripReasoning('<think>hmm, which one</think>\nWhere to?')).toBe('Where to?');
+  expect(stripReasoning('<think>still thinking when cut off')).toBe('');
+  expect(stripReasoning('  Where to?  ')).toBe('Where to?');
+  expect(stripReasoning('')).toBe('');
 });
