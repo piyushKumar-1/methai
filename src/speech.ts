@@ -31,10 +31,12 @@ export function isTransientSpeechError(code: string | null | undefined): boolean
 
 /**
  * Upper bound for speaking `text` aloud, so a TTS engine that dies mid-utterance (and never sends
- * its finish event) can't stall the conversation: ~12 characters a second, plus slack, capped.
+ * its finish event) can't stall the conversation. Generous on purpose (8 characters a second plus
+ * slack, capped): it only matters when the engine dies, and a tight one cuts off long replies, e.g.
+ * a fare list read with "rupees" after every number.
  */
 export function speechTimeoutMs(text: string): number {
-  return Math.min(3000 + Math.ceil(text.length / 12) * 1000, 30000);
+  return Math.min(4000 + Math.ceil(text.length / 8) * 1000, 45000);
 }
 
 /**
