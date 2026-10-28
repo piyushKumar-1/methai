@@ -77,6 +77,11 @@ export interface DeviceVoice extends VoiceIO {
   listen(signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void): Promise<HeardSpeech>;
   /** Locales that have an installed text-to-speech voice. */
   installedLocales(): Promise<string[]>;
+  /**
+   * Gets the text-to-speech engine and the voice for the current locale ready ahead of time (e.g.
+   * at app start), so the first reply isn't delayed by engine start-up.
+   */
+  warmUp(): Promise<void>;
 }
 
 // Any of these ends the current utterance.
@@ -277,6 +282,10 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       }
     },
 
+    async warmUp() {
+      if (await ensureTts()) await prepareVoice(locale());
+    },
+
     async speak(text, signal) {
       const say = speakable(text);
       if (signal.aborted || !say) return;
@@ -285,8 +294,25 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       await prepareVoice(locale());
       let watch: { stop(): Promise<void> } | undefined;
       await new Promise<void>(resolve => {
+        const askedAt = Date.now();
+        let started = false;
+        // Listening for "stop" begins once the voice is actually playing: opening the mic while the
+        // engine is still starting up can delay it.
+        const onStart = () => {
+          if (started) return;
+          started = true;
+          clearTimeout(startFallback);
+          log(`speaking after ${Date.now() - askedAt}ms`);
+          if (bargeIn && !signal.aborted) watch = watchForInterruption(say, stopSpeaking);
+        };
+        const startSubscription = tts.addListener('tts-start', onStart);
+        // Engines that never send a start event still get the stop-word listener, a moment later.
+        const startFallback = setTimeout(onStart, 1500);
         const subscriptions = TTS_END_EVENTS.map(event => tts.addListener(event, () => settle()));
         const settle = () => {
+          clearTimeout(startFallback);
+          started = true;
+          startSubscription.remove();
           clearTimeout(timeout);
           subscriptions.forEach(s => s.remove());
           signal.removeEventListener('abort', stopSpeaking);
@@ -313,7 +339,6 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
         } catch (err) {
           fail(err);
         }
-        if (bargeIn) watch = watchForInterruption(say, stopSpeaking);
       });
       await watch?.stop();
     },

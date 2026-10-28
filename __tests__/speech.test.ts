@@ -181,6 +181,8 @@ describe('deviceVoice', () => {
     const io = deviceVoice({ recognizer: rec, tts: slowTts, locale: () => 'en-IN', micOpenDelayMs: 0 });
     const speaking = io.speak('Your destination is now Nexus Koramangala Mall.', signal);
     await new Promise(r => setTimeout(r, 10));
+    handlers['tts-start']?.(); // the voice starts playing
+    await new Promise(r => setTimeout(r, 10));
     expect(rec.start).toHaveBeenCalledTimes(1); // listening while it speaks
     rec.emit('partial', ['your destination is now next is called']); // its own voice, garbled
     expect(stop).not.toHaveBeenCalled();
@@ -224,6 +226,8 @@ describe('deviceVoice', () => {
     const io = deviceVoice({ recognizer: rec, tts: slowTts, locale: () => 'en-IN', micOpenDelayMs: 0, recognizerOptions });
     const speaking = io.speak('Auto 45 or Meter Cab 38 rupees?', signal);
     await new Promise(r => setTimeout(r, 10));
+    handlers['tts-start']?.();
+    await new Promise(r => setTimeout(r, 10));
     expect(rec.start).toHaveBeenLastCalledWith('en-IN', { MUTE: 'keep-media' });
     rec.emit('partial', ['stop']);
     await speaking;
@@ -233,6 +237,16 @@ describe('deviceVoice', () => {
     rec.emit('partial', ['auto']);
     rec.error('7');
     expect((await heard).text).toBe('auto');
+  });
+
+  test('warmUp gets the engine and voice ready before the first reply', async () => {
+    const rec = fakeRecognizer();
+    const setDefaultVoice = jest.fn(async () => {});
+    const io = deviceVoice({ recognizer: rec, tts: { ...tts, setDefaultVoice }, locale: () => 'en-IN', micOpenDelayMs: 0 });
+    await io.warmUp();
+    expect(setDefaultVoice).toHaveBeenCalledWith('en-in');
+    await io.speak('Where to?', signal);
+    expect(setDefaultVoice).toHaveBeenCalledTimes(1); // already prepared
   });
 
   test("the recognizer's other guesses come back as alternatives", async () => {
