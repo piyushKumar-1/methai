@@ -271,3 +271,46 @@ test('wait_for_screen on a screen that is already loaded returns quickly instead
   expect(Date.now() - started).toBeLessThan(2500);
   await act(async () => renderer.unmount());
 });
+
+test("tab bar buttons for other tabs stay visible; those tabs' screens stay hidden", async () => {
+  // React Navigation wraps each tab bar item in its own route's NavigationContext, so the buttons
+  // for unfocused tabs sit under unfocused contexts, just like those tabs' screens do.
+  const tab = (name: string, focused: boolean) => (
+    <NavigationContext.Provider key={name} value={nav(focused)}>
+      <Pressable role="tab" aria-selected={focused} accessibilityLabel={name} onPress={() => {}}>
+        <Text>{name}</Text>
+      </Pressable>
+    </NavigationContext.Provider>
+  );
+  const bigScreen = (
+    <View>
+      {Array.from({ length: 60 }, (_, i) => (
+        <Text key={i}>Row {i}</Text>
+      ))}
+      <Pressable role="tab" aria-selected={false} onPress={() => {}}>
+        <Text>A tab inside the profile screen</Text>
+      </Pressable>
+    </View>
+  );
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <ScreenContextProvider>
+        <NavigationContext.Provider value={nav(true)}>
+          <Button title="Home screen button" onPress={() => {}} />
+        </NavigationContext.Provider>
+        <NavigationContext.Provider value={nav(false)}>
+          <Button title="Profile screen button" onPress={() => {}} />
+        </NavigationContext.Provider>
+        <NavigationContext.Provider value={nav(false)}>{bigScreen}</NavigationContext.Provider>
+        <View>{[tab('Home', true), tab('Services', false), tab('Profile', false)]}</View>
+      </ScreenContextProvider>,
+    );
+  });
+  const controller = (renderer.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).controller;
+  const labels = controller.captureSync().elements.map(e => e.label);
+  expect(labels).toEqual(expect.arrayContaining(['Home screen button', 'Home', 'Services', 'Profile']));
+  expect(labels).not.toContain('Profile screen button');
+  expect(labels).not.toContain('A tab inside the profile screen'); // a whole screen is not a tab item
+  await act(async () => renderer.unmount());
+});

@@ -1,5 +1,6 @@
 import { Dimensions } from 'react-native';
 import { Fiber, FiberTag, firstHostFiber, publicInstanceOf } from './fiber';
+import { isHidden } from './extract';
 import { measureInWindow } from './measure';
 import type { Bounds } from './types';
 
@@ -29,29 +30,12 @@ export interface Scrollable {
 const isScrollView = (fiber: Fiber) =>
   fiber.tag === FiberTag.ClassComponent && typeof fiber.stateNode?.scrollTo === 'function' && typeof fiber.stateNode?.getScrollResponder === 'function';
 
-/** Hidden subtrees: unfocused navigation screens and views hidden from accessibility. */
-function isHiddenSubtree(fiber: Fiber): boolean {
-  const p = fiber.memoizedProps;
-  if (fiber.tag === FiberTag.OffscreenComponent) return p?.mode === 'hidden';
-  if (fiber.tag === FiberTag.ContextProvider) {
-    const nav = p?.value;
-    if (nav && typeof nav.isFocused === 'function' && typeof nav.navigate === 'function') {
-      try {
-        return nav.isFocused() === false;
-      } catch {
-        return false;
-      }
-    }
-  }
-  return !!p && typeof p === 'object' && (p.importantForAccessibility === 'no-hide-descendants' || p.accessibilityElementsHidden === true);
-}
-
 /** Every mounted ScrollView (FlatList, SectionList and gesture-handler lists render one too), outermost first. */
 export function findScrollables(root: Fiber | null): Scrollable[] {
   const found: Scrollable[] = [];
   const visit = (fiber: Fiber | null) => {
     for (let n = fiber; n; n = n.sibling) {
-      if (isHiddenSubtree(n)) continue;
+      if (isHidden(n)) continue;
       if (isScrollView(n)) found.push({ fiber: n, instance: n.stateNode, horizontal: n.memoizedProps?.horizontal === true });
       visit(n.child);
     }

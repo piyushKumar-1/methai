@@ -67,17 +67,45 @@ interface WalkState {
 const isFn = (v: unknown): v is Function => typeof v === 'function';
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
 
+// A tab or drawer item is a few dozen fibers; a screen is far more.
+const NAV_ITEM_MAX_FIBERS = 150;
+
+const marksNavItem = (p: any) =>
+  !!p &&
+  typeof p === 'object' &&
+  (p.role === 'tab' || p.accessibilityRole === 'tab' || typeof p['aria-selected'] === 'boolean' || typeof p.accessibilityState?.selected === 'boolean');
+
+/**
+ * Whether an unfocused navigation context wraps a navigation item rather than a screen: React
+ * Navigation wraps each bottom-tab (and drawer) item in its route's context too, so the buttons for
+ * other tabs sit under unfocused contexts while being on screen. Such an item is small and marked
+ * as a tab / selectable.
+ */
+function isNavigationItem(provider: Fiber): boolean {
+  let count = 0;
+  let marked = false;
+  const stack: Fiber[] = provider.child ? [provider.child] : [];
+  while (stack.length) {
+    const f = stack.pop()!;
+    if (++count > NAV_ITEM_MAX_FIBERS) return false;
+    if (!marked && marksNavItem(f.memoizedProps)) marked = true;
+    if (f.sibling) stack.push(f.sibling);
+    if (f.child) stack.push(f.child);
+  }
+  return marked;
+}
+
 /** Subtrees that are mounted but not visible / not reachable by the user. */
-function isHidden(fiber: Fiber): boolean {
+export function isHidden(fiber: Fiber): boolean {
   const p = fiber.memoizedProps;
   if (fiber.tag === FiberTag.OffscreenComponent) return p?.mode === 'hidden';
   if (fiber.tag === FiberTag.ContextProvider) {
     // react-navigation's NavigationContext: unfocused screens stay mounted under a
-    // navigation object whose isFocused() is false.
+    // navigation object whose isFocused() is false. Tab bar items share that wrapper.
     const nav = p?.value;
     if (nav && isFn(nav.isFocused) && isFn(nav.navigate)) {
       try {
-        return nav.isFocused() === false;
+        return nav.isFocused() === false && !isNavigationItem(fiber);
       } catch {
         return false;
       }
