@@ -65,6 +65,8 @@ export interface RunAgentOptions {
   /** Who the user is (saved places, history…), added to the system prompt. */
   userContext?: string;
   onToolCall?: (call: ModelToolCall, result: ModelToolResult) => void;
+  /** Runs a tool call (e.g. through the assistant's middleware). Default: the screen action itself. */
+  runTool?: (name: string, input: unknown) => Promise<{ isError: boolean; content: string }>;
   /** Text the model sends along with tool calls ("Sure, finding autos…"), while it keeps working. */
   onProgress?: (text: string) => void;
 }
@@ -99,7 +101,7 @@ async function drive(
       for (const call of turn.toolCalls) {
         // Not signal.throwIfAborted(): React Native's AbortSignal polyfill (abort-controller) lacks it.
         if (signal.aborted) throw new Error('Aborted');
-        const { isError, content } = await controller.executeToolCall(call.name, call.input);
+        const { isError, content } = await (opts.runTool ?? ((name, input) => controller.executeToolCall(name, input)))(call.name, call.input);
         const result = { id: call.id, content, isError };
         opts.onToolCall?.(call, result);
         results.push(result);

@@ -257,12 +257,43 @@ voice: withHostedSpeech(deviceVoice(...), {
 
 It asks for `response_format: 'pcm'` and reads the sample rate from the response's content-type.
 
+### Same behaviour for every kind of assistant
+
+A chat model with the device voice, OpenAI Realtime and ElevenLabs agents all run through one core.
+Transports only speak their protocol (`RealtimeVoiceModel`: they report events such as
+`agent-audio`, `user-text` or `interrupted`, and run tools through `session.runTool`); turn
+timeouts, stop phrases, taps, captions, screen-change notes, tool rules and tracing are the core's.
+
+```ts
+<ScreenContextProvider
+  assistant={{
+    ...voiceOrRealtime,
+    // Refused unless the user's latest reply agreed (one yes, one press), for every assistant.
+    confirm: { isSensitive: (id, label) => /book ride|pay|cancel ride/i.test(label ?? '') },
+    // More tool rules: composeTools-style middleware, outermost first (e.g. toolTimeout(20000)).
+    toolMiddleware: [],
+    // Turns, tool calls (with timings), interruptions, and why a session ended.
+    onEvent: event => console.log(describeEvent(event)),
+    // Speech-to-speech: 'smart' (default), 'raw' or 'off' (see below).
+    voiceInterruptions: 'smart',
+    noSpeechTimeoutMs: 8000, followUpTimeoutMs: 4000, idleTimeoutMs: 12000,
+  }}>
+```
+
+**Talking over the agent.** Without echo cancellation (Android's default mic, emulators, laptop
+speakers) the mic hears the agent, which then keeps interrupting itself. With 'smart', the mic is
+held back from the agent while it talks and checked in the app instead: words in the live captions
+that the agent isn't saying (its echo comes back garbled, with numbers spelled out, and is
+recognised as such), or a voice clearly louder than its echo usually is, cut it off; the user's
+last 1.5 s then go to the agent, so their first words aren't lost. 'raw' sends the mic as is (for
+reliable echo cancellation); 'off' leaves only the tap. On Android, open the mic with the voice
+communication input preset so the platform cancels the speaker too.
+
 ### Model wrappers
 
 - `withModelTimeout(model, ms)`: a stuck backend ends in an error instead of silence.
 - `withModelLogging(model, log)`: requests, screens, tool calls, results, replies and timings.
-- `withConfirmationGuard(model, { isSensitive })`: opt-in hard rule that matching controls are only
-  pressed after the user said yes (a prompt can ask the model to confirm; only this guarantees it).
+- `withConfirmationGuard(model, { isSensitive })`: the chat-model-only form of `confirm` above.
 
 ### Off-screen elements and scrolling
 

@@ -80,7 +80,6 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
     connect: async () => ({ url: 'wss://gw/v1/realtime?model=xor-latest-custom', headers: { Authorization: 'Bearer eph' } }),
     audio,
     voice: 'alloy',
-    idleTimeoutMs: 20,
     WebSocketImpl: FakeWS,
   });
 
@@ -89,6 +88,7 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
     r = TestRenderer.create(
       <ScreenContextProvider
         assistant={{
+          idleTimeoutMs: 20,
           greeting: 'Hey, what do you need?',
           realtime,
           app: {
@@ -135,6 +135,7 @@ test('speech-to-speech session: greeting, mic, tool call on the live screen, ans
   await tick();
   expect(log).toEqual(['play:AAA=', 'capture']);
   expect(assistant.getStatus().state).toBe('listening');
+  await act(async () => new Promise(r => setTimeout(r, 350))); // past the greeting's echo
   mic('BBBB');
   expect(ws.sent.at(-1)).toEqual({ type: 'input_audio_buffer.append', audio: 'BBBB' });
 

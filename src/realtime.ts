@@ -1,5 +1,5 @@
-import type { RealtimeVoiceModel } from './assistant';
-import { pcmLevel } from './pcm';
+import type { RealtimeVoiceModel } from './session';
+import { voiceAudio, type VoiceInterruptions } from './voiceAudio';
 
 /** Streaming mic + speaker at 24 kHz mono PCM16 (base64), e.g. example/pcm-audio.ts. */
 export interface PcmAudioIO {
@@ -28,12 +28,6 @@ export interface OpenAIRealtimeOptions {
   voice?: string;
   /** Event/session shape: 'ga' (current OpenAI Realtime) or 'beta' (older realtime-preview models). Default 'ga'. */
   protocol?: 'ga' | 'beta';
-  /** End the session if the user says nothing for this long after the greeting. Default 8000ms. */
-  noSpeechTimeoutMs?: number;
-  /** 'single' conversations: after an answer, keep listening this long for a reply. Default 4000ms. */
-  followUpTimeoutMs?: number;
-  /** 'continuous' conversations: end after this much silence following an answer. Default 12000ms. */
-  idleTimeoutMs?: number;
   /**
    * How the server decides the user's turn is over. 'semantic' (default) judges from the words
    * whether they're done (a trailing "umm" waits longer); 'server' waits for `silenceDurationMs`
@@ -44,6 +38,10 @@ export interface OpenAIRealtimeOptions {
   eagerness?: 'low' | 'medium' | 'high' | 'auto';
   /** server_vad: silence that ends the user's turn. Default 600ms. */
   silenceDurationMs?: number;
+  /** Live captions from a speech-to-text side stream (see ElevenLabsAgentOptions.liveTranscript). */
+  liveTranscript?: () => Promise<RealtimeConnection>;
+  /** Overrides the assistant's `voiceInterruptions` for this transport. */
+  voiceInterruptions?: VoiceInterruptions;
   /** For tests / non-RN runtimes. Defaults to the global WebSocket (RN's accepts a headers option). */
   WebSocketImpl?: any;
 }
@@ -52,38 +50,43 @@ type FunctionCall = { call_id: string; name: string; arguments: string };
 
 const END_TOOL = 'end_conversation';
 
-/** Speech-to-speech over the OpenAI Realtime WebSocket protocol (LiteLLM's /v1/realtime speaks it too). */
+/**
+ * Speech-to-speech over the OpenAI Realtime WebSocket protocol (LiteLLM's /v1/realtime speaks it
+ * too). This is only the protocol: timeouts, stop phrases, confirmations and captions are the
+ * assistant's (see RealtimeSession).
+ */
 export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceModel {
   const protocol = opts.protocol ?? 'ga';
   return {
-    async run({ greeting, screen, instructions: systemPrompt, tools, onToolCall, setState, onTranscript, onLevel, conversation, isStopPhrase, onInterrupt, signal }) {
+    async run(session) {
+      const { greeting, screen, instructions: systemPrompt, tools, signal } = session;
       const conn = await opts.connect();
       const WS = opts.WebSocketImpl ?? (globalThis as any).WebSocket;
       const ws = new WS(conn.url, conn.protocols ?? [], conn.headers ? { headers: conn.headers } : undefined);
-      const { audio } = opts;
+      const mic = voiceAudio(opts.audio, {
+        voiceInterruptions: opts.voiceInterruptions ?? session.voiceInterruptions,
+        liveTranscript: opts.liveTranscript,
+        WebSocketImpl: opts.WebSocketImpl,
+        onCaption: text => session.emit({ type: 'user-text', text, final: false }),
+        onMicLevel: level => session.emit({ type: 'mic-level', level }),
+        onSpeech: () => session.emit({ type: 'user-speaking' }),
+        onBargeIn: () => cutOff?.(),
+      });
+      let cutOff: (() => void) | undefined;
 
       await new Promise<void>((resolve, reject) => {
-        let phase: 'greeting' | 'conversation' = 'greeting';
         let userSpoke = false;
-        let awaitingSpeech = false;
         let endRequested = false;
-        let capturing = false;
-        let busy = false; // running tool calls
-        let noSpeechTimer: ReturnType<typeof setTimeout> | undefined;
         let settled = false;
+        const partials = new Map<string, string>(); // live transcription per input item
 
         const send = (event: object) => ws.readyState === 1 && ws.send(JSON.stringify(event));
 
         const finish = async (error?: Error) => {
           if (settled) return;
           settled = true;
-          clearTimeout(noSpeechTimer);
           signal.removeEventListener('abort', onAbort);
-          try {
-            if (capturing) await audio.stopCapture();
-            if (!error && !signal.aborted) await audio.drained();
-            else audio.flush();
-          } catch {}
+          await mic.close(!!error || signal.aborted);
           try {
             ws.close();
           } catch {}
@@ -138,26 +141,20 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
           playing = null;
         };
 
-        /** Opens the mic (once) and ends the session if nobody speaks within `timeoutMs`. */
-        const listen = async (timeoutMs: number) => {
-          playing = null; // the last answer has finished playing
-          phase = 'conversation';
-          setState?.('listening');
-          if (!capturing) {
-            capturing = true;
-            await audio.startCapture(chunk => {
-              send({ type: 'input_audio_buffer.append', audio: chunk });
-              if (onLevel) onLevel(pcmLevel(chunk));
-            });
-          }
-          awaitingSpeech = true;
-          clearTimeout(noSpeechTimer);
-          noSpeechTimer = setTimeout(() => awaitingSpeech && void finish(), timeoutMs);
-        };
+        /** The reply has finished playing: open the mic (once) and hand the turn to the user. */
+        const answered = () =>
+          void mic
+            .drained()
+            .then(() => {
+              if (settled) return;
+              playing = null;
+              if (endRequested) return finish();
+              void mic.startMic(chunk => send({ type: 'input_audio_buffer.append', audio: chunk })).catch(e => finish(e));
+              session.emit({ type: 'agent-done' });
+            })
+            .catch(e => finish(e));
 
         const runToolCalls = async (calls: FunctionCall[]) => {
-          busy = true;
-          setState?.('thinking');
           for (const call of calls) {
             if (call.name === END_TOOL) {
               endRequested = true;
@@ -170,27 +167,37 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
             } catch {
               input = call.arguments;
             }
-            const result = await onToolCall(call.name, input);
+            const result = await session.runTool(call.name, input);
             send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: result.content } });
           }
-          busy = false;
-          if (endRequested) return void finish();
+          if (endRequested) return answered();
           send({ type: 'response.create' });
         };
 
-        onInterrupt(() => {
-          // Cut the answer short; the server keeps listening for the user's next turn.
-          audio.flush();
+        // The user talked over the agent: stop the reply; their voice now reaches the server.
+        cutOff = () => {
           send({ type: 'response.cancel' });
           truncatePlaying();
-          setState?.('listening');
+          session.emit({ type: 'interrupted' });
+          session.emit({ type: 'user-speaking' });
+        };
+
+        session.handle({
+          // Cut the answer short; the server keeps listening for the user's next turn.
+          interrupt: () => {
+            mic.flush();
+            send({ type: 'response.cancel' });
+            truncatePlaying();
+            session.emit({ type: 'interrupted' });
+            answered();
+          },
+          context: text => send({ type: 'conversation.item.create', item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } }),
         });
 
         ws.onopen = () => {
           send({ type: 'session.update', session: sessionWith(vad) });
           // Speak the configured greeting first, then open the mic (avoids the mic hearing it).
           send({ type: 'response.create', response: { instructions: `Say exactly this greeting and nothing else: "${greeting}"` } });
-          setState?.('greeting');
         };
 
         ws.onerror = (e: any) => void finish(new Error(`Realtime connection error${e?.message ? `: ${e.message}` : ''}`));
@@ -209,46 +216,48 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
             case 'response.output_audio.delta':
             case 'response.audio.delta':
               if (event.delta) {
-                audio.play(event.delta);
+                const level = mic.play(event.delta);
                 if (!playing || playing.itemId !== event.item_id) playing = { itemId: event.item_id, startedAt: Date.now(), queuedMs: 0 };
                 // PCM16 mono 24 kHz: 48 bytes per ms, 4 base64 chars per 3 bytes.
                 playing.queuedMs += (event.delta.length * 3) / 4 / 48;
-                if (onLevel) onLevel(pcmLevel(event.delta));
+                session.emit({ type: 'agent-audio', level });
               }
-              if (phase === 'conversation' && !busy) setState?.('speaking');
+              break;
+            case 'response.output_audio_transcript.delta':
+            case 'response.audio_transcript.delta':
+              if (event.delta) mic.agentSays(event.delta);
+              break;
+            case 'response.output_audio_transcript.done':
+            case 'response.audio_transcript.done':
+              if (event.transcript?.trim()) session.emit({ type: 'agent-text', text: event.transcript.trim() });
               break;
             case 'input_audio_buffer.speech_started':
-              userSpoke = true;
-              awaitingSpeech = false;
-              clearTimeout(noSpeechTimer);
-              audio.flush(); // barge-in
-              truncatePlaying();
-              setState?.('listening');
+              if (playing) {
+                // Barge-in: stop the answer, and the model learns how much was heard.
+                mic.flush();
+                truncatePlaying();
+                session.emit({ type: 'interrupted' });
+              }
+              session.emit({ type: 'user-speaking' });
               break;
-            case 'input_audio_buffer.speech_stopped':
-              setState?.('thinking');
+            case 'conversation.item.input_audio_transcription.delta': {
+              const text = (partials.get(event.item_id) ?? '') + (event.delta ?? '');
+              partials.set(event.item_id, text);
+              if (text.trim()) session.emit({ type: 'user-text', text: text.trim(), final: false });
               break;
+            }
             case 'conversation.item.input_audio_transcription.completed':
-              if (event.transcript) {
-                const text = String(event.transcript).trim();
-                onTranscript?.(text);
-                if (isStopPhrase(text)) endRequested = true; // end after the model's reply
+              partials.delete(event.item_id);
+              if (event.transcript?.trim()) {
+                userSpoke = true;
+                session.emit({ type: 'user-text', text: String(event.transcript).trim(), final: true });
               }
               break;
             case 'response.done': {
               const output: any[] = event.response?.output ?? [];
               const calls: FunctionCall[] = output.filter(o => o.type === 'function_call');
-              if (calls.length) {
-                void runToolCalls(calls).catch(e => finish(e));
-              } else if (phase === 'greeting') {
-                void audio.drained().then(() => listen(opts.noSpeechTimeoutMs ?? 8000)).catch(e => finish(e));
-              } else if (endRequested) {
-                void finish();
-              } else if (userSpoke && event.response?.status !== 'cancelled') {
-                // Answer given: once it has played, keep listening (continuous) or wait briefly for a reply.
-                const timeout = conversation === 'continuous' ? opts.idleTimeoutMs ?? 12000 : opts.followUpTimeoutMs ?? 4000;
-                void audio.drained().then(() => listen(timeout)).catch(e => finish(e));
-              }
+              if (calls.length) void runToolCalls(calls).catch(e => finish(e));
+              else if (event.response?.status !== 'cancelled') answered();
               break;
             }
             case 'error': {

@@ -1,7 +1,10 @@
 import { runAgent, runAgentFollowUp, type AgentModel, type UserRequest } from './agent';
-import { buildInstructions, SCREEN_TOOLS, type AppContext, type ToolSpec } from './llm';
+import { buildInstructions, SCREEN_TOOLS, type AppContext } from './llm';
 import type { ScreenContextController, ToolCallResult } from './ScreenContextProvider';
+import type { AssistantEvent, RealtimeControls, RealtimeVoiceModel, SessionEndReason } from './session';
 import { endOfTurnDelay, type EndOfTurnOptions } from './speech';
+import { composeTools, confirmBefore, type ConfirmOptions, type ToolContext, type ToolMiddleware } from './tools';
+import type { VoiceInterruptions } from './voiceAudio';
 
 export interface ListenOptions {
   /** Silence (ms) after `transcript` that ends the user's turn: short when it sounds finished. */
@@ -52,33 +55,6 @@ export function requestWithAlternatives(heard: HeardSpeech): string {
     .filter(a => a && !seen.has(a.toLowerCase()) && seen.add(a.toLowerCase()))
     .slice(0, 3);
   return others.length ? `${heard.text}\n(Speech recognition, other possible readings: ${others.map(a => JSON.stringify(a)).join(', ')})` : heard.text;
-}
-
-/**
- * Speech-to-speech model session (realtime voice APIs). It owns the mic and speaker, greets the
- * user, and calls `onToolCall` for screen actions; it resolves when the exchange is over.
- */
-export interface RealtimeVoiceModel {
-  run(session: {
-    greeting: string;
-    screen: string;
-    /** System prompt: agent rules + app context. */
-    instructions: string;
-    tools: ToolSpec[];
-    onToolCall: (name: string, input: unknown) => Promise<ToolCallResult>;
-    /** Report listening / thinking / speaking so the UI can follow along. */
-    setState?: (state: AssistantState) => void;
-    onTranscript?: (text: string) => void;
-    /** Mic or model loudness (0–1), for visuals. */
-    onLevel?: (level: number) => void;
-    /** 'continuous': keep the session open after each answer until the user is done. */
-    conversation: ConversationMode;
-    /** True for utterances like "stop", "that's all", "thanks, bye". */
-    isStopPhrase: (text: string) => boolean;
-    /** Register what to do when the user taps to cut the model off mid-answer. */
-    onInterrupt: (handler: () => void) => void;
-    signal: AbortSignal;
-  }): Promise<void>;
 }
 
 /**
@@ -201,6 +177,23 @@ export type AssistantConfig = {
   maxFollowUps?: number;
   /** How long a pause ends the user's turn (word-aware: longer after "and…", "um…", digits). */
   endOfTurn?: EndOfTurnOptions;
+  /**
+   * Controls that must not be pressed without the user's yes (pay, book, delete…), for every kind
+   * of assistant: a press the user hasn't agreed to is refused and the model is told to ask.
+   */
+  confirm?: ConfirmOptions;
+  /** More tool middleware (outermost first): decide, change, time or log screen actions. */
+  toolMiddleware?: ToolMiddleware[];
+  /** Everything that happens (turns, tool calls, interruptions, why a session ended), for logs. */
+  onEvent?: (event: AssistantEvent) => void;
+  /** Speech-to-speech voices: how the user can cut the agent off by talking. Default 'smart'. */
+  voiceInterruptions?: VoiceInterruptions;
+  /** Speech-to-speech voices: end the session if the user says nothing after the greeting. Default 8000ms. */
+  noSpeechTimeoutMs?: number;
+  /** Speech-to-speech voices, 'single' conversations: how long to wait for a reply to an answer. Default 4000ms. */
+  followUpTimeoutMs?: number;
+  /** Speech-to-speech voices, 'continuous' conversations: silence after an answer that ends the session. Default 12000ms. */
+  idleTimeoutMs?: number;
 } & ({ voice: VoiceIO; model: AgentModel } | { realtime: RealtimeVoiceModel });
 
 export type AssistantState = 'idle' | 'greeting' | 'listening' | 'thinking' | 'speaking';
@@ -228,6 +221,11 @@ export class VoiceAssistant {
   /** Spoken progress updates still playing while the agent works; answers wait for them. */
   private progressSpeech: Promise<void> = Promise.resolve();
   private listeners = new Set<(s: AssistantStatus) => void>();
+  /** This session: its number, the user's turns and last words (for tool middleware), and why it ended. */
+  private sessionId = 0;
+  private userTurns = 0;
+  private lastUserText = '';
+  private endReason: SessionEndReason | undefined;
 
   constructor(
     private readonly controller: ScreenContextController,
@@ -250,11 +248,18 @@ export class VoiceAssistant {
     };
   }
 
+  private trace(event: AssistantEvent) {
+    try {
+      this.config.onEvent?.(event);
+    } catch {}
+  }
+
   private set(patch: Partial<AssistantStatus>) {
     // Skip no-op updates: realtime models report state per audio chunk, and every notify re-renders subscribers.
     if ((Object.keys(patch) as (keyof AssistantStatus)[]).every(k => this.status[k] === patch[k])) return;
     if (patch.state && patch.state !== this.status.state) {
       this.controller.reportVoice(patch.state === 'greeting' ? 'speaking' : patch.state);
+      this.trace({ type: 'state', state: patch.state });
     }
     this.status = { ...this.status, ...patch };
     for (const l of [...this.listeners]) l(this.status);
@@ -288,7 +293,37 @@ export class VoiceAssistant {
   }
 
   cancel(): void {
-    this.abort?.abort();
+    this.endWith('user');
+  }
+
+  private endWith(reason: SessionEndReason) {
+    if (!this.abort) return;
+    this.endReason ??= reason;
+    this.abort.abort();
+  }
+
+  /** The user's words, for the log, the trace and tool middleware ("was that a yes?"). */
+  private userSaid(text: string) {
+    this.userTurns++;
+    this.lastUserText = text;
+    this.addToLog('user', text);
+    this.trace({ type: 'user', text });
+  }
+
+  /**
+   * How every tool call runs, whatever the assistant: the app's middleware (confirmations first),
+   * around the screen action, timed and traced.
+   */
+  private toolRunner(config: AssistantConfig): (name: string, input: unknown) => Promise<ToolCallResult> {
+    const middleware = [...(config.confirm ? [confirmBefore(config.confirm)] : []), ...(config.toolMiddleware ?? [])];
+    const run = composeTools((call, _ctx) => this.controller.executeToolCall(call.name, call.input), middleware);
+    return async (name, input) => {
+      const ctx: ToolContext = { sessionId: this.sessionId, userTurns: this.userTurns, lastUserText: this.lastUserText, controller: this.controller };
+      const started = Date.now();
+      const result = await run({ name, input }, ctx);
+      this.trace({ type: 'tool', name, input, result, ms: Date.now() - started });
+      return result;
+    };
   }
 
   private voicePhase() {
@@ -297,7 +332,9 @@ export class VoiceAssistant {
   }
 
   private addToLog(role: AssistantMessage['role'], text: string) {
-    if (text.trim()) this.set({ log: [...this.status.log, { role, text: text.trim() }].slice(-MAX_LOG) });
+    if (!text.trim()) return;
+    if (role === 'assistant') this.trace({ type: 'agent', text: text.trim() });
+    this.set({ log: [...this.status.log, { role, text: text.trim() }].slice(-MAX_LOG) });
   }
 
   /**
@@ -314,9 +351,11 @@ export class VoiceAssistant {
     try {
       const result = (await voice.speak(text, speech.signal)) || undefined;
       const cut = result?.interrupted || (speech.signal.aborted && !signal.aborted);
-      if (cut && onCut) {
+      if (cut) {
         const chars = result?.spokenChars;
-        onCut(chars === undefined ? undefined : chars >= text.length ? text : text.slice(0, chars).trim());
+        const heard = chars === undefined ? undefined : chars >= text.length ? text : text.slice(0, chars).trim();
+        this.trace({ type: 'interrupted', heard });
+        onCut?.(heard);
       }
     } finally {
       offLevel?.();
@@ -377,6 +416,12 @@ export class VoiceAssistant {
       previous.model === model &&
       Date.now() - previous.endedAt < (config.resumeWithinMs ?? 0);
     if (!resumed) this.conversation = null;
+    this.sessionId++;
+    this.userTurns = 0;
+    this.lastUserText = '';
+    this.endReason = undefined;
+    const runTool = this.toolRunner(config);
+    this.trace({ type: 'session-start', kind: 'realtime' in config ? 'realtime' : 'chat', resumed });
     this.controller.setActive(true);
     this.set({ state: 'greeting', transcript: '', error: undefined, ...(!resumed && { log: [] }) });
     this.interruptHandler = null;
@@ -392,30 +437,20 @@ export class VoiceAssistant {
       const stop = (text: string) => isStopPhrase(text, config.stopPhrases);
 
       if ('realtime' in config) {
-        this.set({ state: 'listening' });
-        await config.realtime.run({
+        await this.runRealtime(config, config.realtime, {
           greeting: greeting ?? 'How can I help?',
           screen,
           instructions: buildInstructions(config.app, config.systemPrompt, userContext),
-          tools: SCREEN_TOOLS,
-          onToolCall: (name, input) => {
-            this.set({ state: 'thinking' });
-            return this.controller.executeToolCall(name, input);
-          },
-          setState: state => this.set({ state }),
-          onTranscript: transcript => this.set({ transcript }),
-          onLevel: level => this.controller.reportVoice(this.voicePhase(), level),
-          conversation,
-          isStopPhrase: stop,
-          onInterrupt: handler => (this.interruptHandler = handler),
           signal,
+          runTool,
+          stop,
         });
         return;
       }
 
       const { voice } = config;
       const agentModel = config.model;
-      const opts = { signal, maxSteps: config.maxSteps, app: config.app, systemPrompt: config.systemPrompt, userContext };
+      const opts = { signal, maxSteps: config.maxSteps, app: config.app, systemPrompt: config.systemPrompt, userContext, runTool };
       // The screen captured at the tap goes with the first model call; later ones capture afresh.
       let firstScreen: string | undefined = screen;
       // Continues the conversation when there is a clean one to continue, else starts one. A call
@@ -468,10 +503,17 @@ export class VoiceAssistant {
       let answer = '';
       let turn = 0;
       let failures = 0;
-      while (turn < (config.maxTurns ?? 30) && !signal.aborted) {
+      while (!signal.aborted) {
+        if (turn >= (config.maxTurns ?? 30)) {
+          this.endReason ??= 'max-turns';
+          break;
+        }
         if (turn > 0) {
           const keepListening = conversation === 'continuous' || (answer.trim().endsWith('?') && turn <= (config.maxFollowUps ?? 3));
-          if (!keepListening) break;
+          if (!keepListening) {
+            this.endReason ??= 'agent';
+            break;
+          }
         }
         const listenedAt = Date.now();
         const heard = await listen();
@@ -485,11 +527,13 @@ export class VoiceAssistant {
             continue;
           }
           if (turn === 0 && config.noInputReply) await this.speak(voice, config.noInputReply, signal);
+          this.endReason ??= 'silence';
           break;
         }
         turn++;
-        this.addToLog('user', request);
+        this.userSaid(request);
         if (stop(request)) {
+          this.endReason ??= 'stop-phrase';
           this.set({ state: 'speaking' });
           await this.speak(voice, config.farewell ?? 'Okay.', signal);
           break;
@@ -514,12 +558,151 @@ export class VoiceAssistant {
         }
       }
     } catch (e: any) {
-      if (!signal.aborted) this.set({ error: e?.message ?? String(e) });
+      if (!signal.aborted) {
+        this.endReason ??= 'error';
+        this.set({ error: e?.message ?? String(e) });
+      }
     } finally {
       if (this.conversation) this.conversation = { ...this.conversation, endedAt: Date.now() };
       this.abort = null;
+      this.interruptHandler = null;
       this.controller.setActive(false);
       this.set({ state: 'idle' });
+      this.trace({ type: 'session-end', reason: this.endReason ?? (signal.aborted ? 'user' : 'agent'), ...(this.status.error && { error: this.status.error }) });
+    }
+  }
+
+  /**
+   * A speech-to-speech session. The transport only speaks its protocol; the behaviour is here, the
+   * same for every transport: turn timeouts, stop phrases, captions, taps, screen-change notes.
+   */
+  private async runRealtime(
+    config: AssistantConfig,
+    transport: RealtimeVoiceModel,
+    session: {
+      greeting: string;
+      screen: string;
+      instructions: string;
+      signal: AbortSignal;
+      runTool: (name: string, input: unknown) => Promise<ToolCallResult>;
+      stop: (text: string) => boolean;
+    },
+  ): Promise<void> {
+    const { signal } = session;
+    const conversation = config.conversation ?? 'continuous';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let endAfterReply = false;
+    let toolsRunning = 0;
+    let controls: RealtimeControls = {};
+    let lastScreen = session.screen;
+    let screenCheckedForTurn = -1;
+    const clear = () => clearTimeout(timer);
+
+    /** The user's turn: wait for them, up to the timeout that fits where the conversation is. */
+    const awaitUser = () => {
+      clear();
+      const ms =
+        this.userTurns === 0
+          ? config.noSpeechTimeoutMs ?? 8000
+          : conversation === 'single'
+            ? config.followUpTimeoutMs ?? 4000
+            : config.endOnSilence === false
+              ? undefined
+              : config.idleTimeoutMs ?? 12000;
+      if (ms !== undefined) timer = setTimeout(() => this.endWith('silence'), ms);
+    };
+
+    /** Before the user's turn is answered: if they changed the screen themselves, tell the agent. */
+    const checkScreen = async () => {
+      if (screenCheckedForTurn === this.userTurns || !controls.context) return;
+      screenCheckedForTurn = this.userTurns;
+      const now = await this.controller.describe();
+      const note = screenChangeNote(lastScreen, now);
+      lastScreen = now;
+      if (!note || signal.aborted) return;
+      const text = `${note}\nScreen now:\n${now}`;
+      controls.context?.(text);
+      this.trace({ type: 'context', text });
+    };
+
+    try {
+      await transport.run({
+        greeting: session.greeting,
+        screen: session.screen,
+        instructions: session.instructions,
+        tools: SCREEN_TOOLS,
+        signal,
+        voiceInterruptions: config.voiceInterruptions ?? 'smart',
+        runTool: async (name, input) => {
+          clear();
+          toolsRunning++;
+          this.set({ state: 'thinking' });
+          try {
+            return await session.runTool(name, input);
+          } finally {
+            toolsRunning--;
+            lastScreen = await this.controller.describe().catch(() => lastScreen);
+          }
+        },
+        handle: c => {
+          controls = { ...controls, ...c };
+          if (c.interrupt) this.interruptHandler = () => controls.interrupt?.();
+        },
+        emit: event => {
+          if (signal.aborted) return;
+          switch (event.type) {
+            case 'agent-audio':
+              clear();
+              this.set({ state: this.userTurns === 0 ? 'greeting' : 'speaking' });
+              if (event.level !== undefined) this.controller.reportVoice('speaking', event.level);
+              break;
+            case 'agent-done':
+              if (endAfterReply) return this.endWith('stop-phrase');
+              if (toolsRunning > 0) break;
+              this.set({ state: 'listening', transcript: '' });
+              awaitUser();
+              break;
+            case 'agent-text':
+              this.addToLog('assistant', event.text);
+              break;
+            case 'user-speaking':
+              clear();
+              if (this.status.state !== 'speaking' && this.status.state !== 'greeting') this.set({ state: 'listening' });
+              void checkScreen();
+              break;
+            case 'user-text':
+              clear();
+              if (!event.final) {
+                this.set({ state: 'listening', transcript: event.text });
+                void checkScreen();
+                break;
+              }
+              this.set({ state: 'thinking', transcript: event.text });
+              this.userSaid(event.text);
+              // Ends once the agent has answered (a goodbye), like the other assistants.
+              if (session.stop(event.text) || this.userTurns >= (config.maxTurns ?? 30)) {
+                endAfterReply = true;
+                this.endReason ??= session.stop(event.text) ? 'stop-phrase' : 'max-turns';
+              }
+              break;
+            case 'mic-level':
+              if (this.status.state === 'listening') this.controller.reportVoice('listening', event.level);
+              break;
+            case 'interrupted':
+              // The user's turn now (if it was a false alarm, silence still ends the session).
+              this.trace({ type: 'interrupted', heard: event.heard });
+              if (toolsRunning === 0) {
+                this.set({ state: 'listening' });
+                awaitUser();
+              }
+              break;
+          }
+        },
+      });
+      // The transport finished by itself: the agent hung up (end_call / end_conversation).
+      this.endReason ??= 'agent';
+    } finally {
+      clear();
     }
   }
 }

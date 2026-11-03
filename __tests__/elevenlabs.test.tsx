@@ -72,12 +72,12 @@ test('client tools: ElevenLabs schema subset, args as JSON text', () => {
 
 test('ElevenLabs agent session: prompt + greeting, mic after greeting, client tool on the live screen, interruption, idle end', async () => {
   const { audio, log, mic } = fakeAudio();
-  const realtime = elevenLabsAgentModel({ connect: async () => ({ url: 'wss://el/signed' }), audio, idleTimeoutMs: 50, WebSocketImpl: FakeWS });
+  const realtime = elevenLabsAgentModel({ connect: async () => ({ url: 'wss://el/signed' }), audio, WebSocketImpl: FakeWS });
 
   let r!: TestRenderer.ReactTestRenderer;
   await act(async () => {
     r = TestRenderer.create(
-      <ScreenContextProvider assistant={{ greeting: 'Hey, what do you need?', realtime }}>
+      <ScreenContextProvider assistant={{ greeting: 'Hey, what do you need?', realtime, idleTimeoutMs: 50 }}>
         <Shop />
       </ScreenContextProvider>,
     );
@@ -179,11 +179,11 @@ test('hosted speech: streams PCM at the reported rate, falls back to the device 
 
 test('ElevenLabs agent session: talking keeps it open past the no-speech timeout, before any transcript', async () => {
   const { audio, log, mic } = fakeAudio();
-  const realtime = elevenLabsAgentModel({ connect: async () => ({ url: 'wss://el/signed' }), audio, noSpeechTimeoutMs: 300, WebSocketImpl: FakeWS });
+  const realtime = elevenLabsAgentModel({ connect: async () => ({ url: 'wss://el/signed' }), audio, WebSocketImpl: FakeWS });
   let r!: TestRenderer.ReactTestRenderer;
   await act(async () => {
     r = TestRenderer.create(
-      <ScreenContextProvider assistant={{ greeting: 'Hi', realtime }}>
+      <ScreenContextProvider assistant={{ greeting: 'Hi', realtime, noSpeechTimeoutMs: 300 }}>
         <Shop />
       </ScreenContextProvider>,
     );
@@ -243,6 +243,7 @@ test('ElevenLabs agent session: live captions from Scribe while the user talks, 
   expect(assistant.getStatus().transcript).toBe('book an auto to');
   await act(async () => {
     agent.server({ type: 'user_transcript', user_transcription_event: { user_transcript: 'book an auto to Cubbon Park', event_id: 2 } });
+    agent.server({ type: 'agent_response', agent_response_event: { agent_response: 'Booking your auto now.', event_id: 3 } });
     agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 3 } });
     scribe.server({ message_type: 'partial_transcript', text: 'Booking your auto' }); // the agent, heard by the mic
   });
@@ -277,6 +278,64 @@ test('ElevenLabs agent session: the mic sends silence while the agent talks, so 
   await act(async () => ws.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(48000)), event_id: 2 } }));
   mic(voice);
   expect(ws.sent.at(-1)).toEqual({ user_audio_chunk: floatToPcm16Base64(new Float32Array(2400)) });
+  await act(async () => assistant.cancel());
+  await act(async () => r.unmount());
+});
+
+test('ElevenLabs agent session: talking over the agent cuts it off; its own echo does not', async () => {
+  const { audio, log, mic } = fakeAudio();
+  const sockets: FakeWS[] = [];
+  class TrackedWS extends FakeWS {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  const events: string[] = [];
+  const realtime = elevenLabsAgentModel({
+    connect: async () => ({ url: 'wss://el/signed' }),
+    liveTranscript: async () => ({ url: 'wss://el/scribe' }),
+    audio,
+    WebSocketImpl: TrackedWS,
+  });
+  let r!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    r = TestRenderer.create(
+      <ScreenContextProvider assistant={{ greeting: 'Hi', realtime, onEvent: e => events.push(e.type) }}>
+        <Shop />
+      </ScreenContextProvider>,
+    );
+  });
+  const assistant = (r.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).assistant!;
+  await act(async () => void assistant.start());
+  await wait(0);
+  const [agent] = sockets;
+  await act(async () => agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 1 } }));
+  await wait(450);
+  const scribe = sockets[1];
+
+  // A 3 s reply: its echo in the captions is the agent's own words, garbled. Nothing happens.
+  await act(async () => {
+    agent.server({ type: 'agent_response', agent_response_event: { agent_response: 'The Auto to Cubbon Park is 45 rupees. Shall I book it?', event_id: 2 } });
+    agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(72000)), event_id: 2 } });
+  });
+  const voice = floatToPcm16Base64(new Float32Array(2400).fill(0.05));
+  mic(voice);
+  expect(agent.sent.at(-1)).toEqual({ user_audio_chunk: floatToPcm16Base64(new Float32Array(2400)) }); // held back
+  await act(async () => scribe.server({ message_type: 'partial_transcript', text: 'the auto to cub and park is forty five' }));
+  expect(events).not.toContain('interrupted');
+  expect(log.filter(l => l === 'flush')).toHaveLength(0);
+
+  // The user says something else: the agent stops, and what they said while it talked goes through.
+  await act(async () => scribe.server({ message_type: 'partial_transcript', text: 'no take me to the airport instead' }));
+  expect(log.at(-1)).toBe('flush');
+  expect(events).toContain('interrupted');
+  expect(agent.sent.at(-1)).toEqual({ user_audio_chunk: voice });
+  expect(assistant.getStatus().transcript).toBe('no take me to the airport instead');
+  // The rest of the old reply is dropped until ElevenLabs starts a new one.
+  const played = log.length;
+  await act(async () => agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 2 } }));
+  expect(log.length).toBe(played);
   await act(async () => assistant.cancel());
   await act(async () => r.unmount());
 });
