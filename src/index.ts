@@ -12,7 +12,11 @@ export { DEFAULT_STOP_PHRASES, isStopPhrase, OPENING_REQUEST, requestWithAlterna
 export type { AssistantConfig, AssistantMessage, HeardSpeech, ListenOptions, SpeakResult, ConversationMode, SessionStart, AssistantState, AssistantStatus, RealtimeVoiceModel, VoiceIO } from './assistant';
 export { openAIRealtimeModel } from './realtime';
 export type { OpenAIRealtimeOptions, PcmAudioIO, RealtimeConnection } from './realtime';
-export { floatToPcm16Base64, pcm16Base64ToFloat, resample } from './pcm';
+export { elevenLabsAgentModel, elevenLabsClientTools } from './elevenlabs';
+export { withHostedSpeech } from './hostedSpeech';
+export type { HostedSpeechOptions } from './hostedSpeech';
+export type { ElevenLabsAgentOptions } from './elevenlabs';
+export { floatToPcm16Base64, pcm16Base64ToFloat, pcmLevel, resample } from './pcm';
 export { AgentGlow } from './AgentGlow';
 export type { AgentGlowProps } from './AgentGlow';
 export { AssistantButton } from './AssistantButton';

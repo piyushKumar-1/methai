@@ -1,24 +1,28 @@
 import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
+import { fetch as streamingFetch } from 'expo/fetch';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import {
   AIAction,
   AIIgnore,
   AssistantButton,
+  elevenLabsAgentModel,
   openAIChatModel,
   openAIRealtimeModel,
   ScreenContextProvider,
   useAssistant,
+  withHostedSpeech,
   type AssistantConfig,
+  type VoiceIO,
 } from 'react-native-screen-context';
 import { APP_CONTEXT } from './src/appContext';
-import { CHAT_MODELS, CLOUD_VOICE_MODELS, REALTIME_MODELS, SERVER_URL } from './src/config';
+import { CHAT_MODELS, CLOUD_VOICE_MODELS, HOSTED_VOICES, REALTIME_MODELS, SERVER_URL, type HostedVoiceId } from './src/config';
 import { devicePcmAudio } from './src/pcm-audio';
 import { deviceVoice, rankedVoices, type RankedVoice } from './src/voice';
 
 type Tab = 'Login' | 'Shop' | 'Settings';
-type Mode = 'cloud' | 'pipeline' | 'realtime';
+type Mode = 'cloud' | 'pipeline' | 'realtime' | 'elevenlabs';
 
 const GREETING = 'Hi! How can I help?';
 // Read on every utterance, so picking a voice in Settings applies immediately.
@@ -27,6 +31,21 @@ const voice = deviceVoice({ voice: () => selectedVoice });
 // Same mic + speaker, but the recorded utterance goes to the model, which hears it itself.
 const cloudVoice = deviceVoice({ voice: () => selectedVoice, sendAudio: true });
 let pcmAudio: ReturnType<typeof devicePcmAudio> | undefined;
+const speaker = () => (pcmAudio ??= devicePcmAudio());
+
+/** Answers spoken by a hosted voice (through the demo server, which holds the OpenRouter key). */
+function hosted(base: VoiceIO, id: HostedVoiceId): VoiceIO {
+  const choice = HOSTED_VOICES.find(v => v.id === id);
+  if (!choice || !('model' in choice)) return base;
+  return withHostedSpeech(base, {
+    endpoint: `${SERVER_URL}/speech`,
+    model: choice.model,
+    voice: choice.voice,
+    audio: speaker(),
+    fetchImpl: streamingFetch as unknown as typeof fetch,
+    onError: e => console.warn('Hosted voice failed, using the device voice:', e.message),
+  });
+}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('Shop');
@@ -34,16 +53,31 @@ export default function App() {
   const [chatModel, setChatModel] = useState<string>(CHAT_MODELS[0]);
   const [cloudModel, setCloudModel] = useState<string>(CLOUD_VOICE_MODELS[0]);
   const [realtimeModel, setRealtimeModel] = useState<string>(REALTIME_MODELS[0]);
+  const [hostedVoice, setHostedVoice] = useState<HostedVoiceId>('eleven');
 
   const assistant = useMemo<AssistantConfig>(() => {
     if (mode === 'realtime') {
-      pcmAudio ??= devicePcmAudio();
       return {
         greeting: GREETING,
         app: APP_CONTEXT,
         realtime: openAIRealtimeModel({
           connect: async () => ({ url: `${SERVER_URL.replace(/^http/, 'ws')}/realtime?model=${encodeURIComponent(realtimeModel)}` }),
-          audio: pcmAudio,
+          audio: speaker(),
+        }),
+      };
+    }
+    if (mode === 'elevenlabs') {
+      return {
+        greeting: GREETING,
+        app: APP_CONTEXT,
+        realtime: elevenLabsAgentModel({
+          connect: async () => {
+            const res = await fetch(`${SERVER_URL}/elevenlabs/signed-url`);
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.error?.message ?? body.detail?.message ?? `HTTP ${res.status}`);
+            return { url: body.signed_url };
+          },
+          audio: speaker(),
         }),
       };
     }
@@ -53,10 +87,10 @@ export default function App() {
       noInputReply: "Sorry, I didn't catch that.",
       // "Sure, adding those." while it works, instead of silence.
       speakProgress: true,
-      voice: mode === 'cloud' ? cloudVoice : voice,
+      voice: hosted(mode === 'cloud' ? cloudVoice : voice, hostedVoice),
       model: openAIChatModel({ endpoint: `${SERVER_URL}/chat`, model: mode === 'cloud' ? cloudModel : chatModel }),
     };
-  }, [mode, chatModel, cloudModel, realtimeModel]);
+  }, [mode, chatModel, cloudModel, realtimeModel, hostedVoice]);
 
   return (
     <ScreenContextProvider assistant={assistant} getScreenName={() => tab}>
@@ -76,6 +110,8 @@ export default function App() {
               setCloudModel={setCloudModel}
               realtimeModel={realtimeModel}
               setRealtimeModel={setRealtimeModel}
+              hostedVoice={hostedVoice}
+              setHostedVoice={setHostedVoice}
             />
           )}
         </ScrollView>
@@ -219,6 +255,8 @@ function SettingsScreen(props: {
   setCloudModel: (m: string) => void;
   realtimeModel: string;
   setRealtimeModel: (m: string) => void;
+  hostedVoice: HostedVoiceId;
+  setHostedVoice: (v: HostedVoiceId) => void;
 }) {
   const [notifications, setNotifications] = useState(true);
   const [offers, setOffers] = useState(false);
@@ -246,19 +284,28 @@ function SettingsScreen(props: {
               ['cloud', 'Cloud voice model (hears your audio)'],
               ['pipeline', 'On-device speech + chat model'],
               ['realtime', 'Voice model (realtime)'],
+              ['elevenlabs', 'ElevenLabs agent'],
             ]}
             value={props.mode}
             onChange={m => props.setMode(m as Mode)}
           />
-          <Text style={styles.label}>{props.mode === 'pipeline' ? 'Chat model' : 'Voice model'}</Text>
-          {props.mode === 'pipeline' ? (
+          {props.mode !== 'elevenlabs' && <Text style={styles.label}>{props.mode === 'pipeline' ? 'Chat model' : 'Voice model'}</Text>}
+          {props.mode === 'elevenlabs' ? (
+            <Text style={styles.muted}>ElevenLabs listens, decides when you're done, and speaks; its agent presses the buttons here.</Text>
+          ) : props.mode === 'pipeline' ? (
             <Chips options={CHAT_MODELS.map(m => [m, m])} value={props.chatModel} onChange={props.setChatModel} />
           ) : props.mode === 'cloud' ? (
             <Chips options={CLOUD_VOICE_MODELS.map(m => [m, m])} value={props.cloudModel} onChange={props.setCloudModel} />
           ) : (
             <Chips options={REALTIME_MODELS.map(m => [m, m])} value={props.realtimeModel} onChange={props.setRealtimeModel} />
           )}
-          {props.mode !== 'realtime' && <VoicePicker />}
+          {(props.mode === 'cloud' || props.mode === 'pipeline') && (
+            <>
+              <Text style={styles.label}>Answer voice</Text>
+              <Chips options={HOSTED_VOICES.map(v => [v.id, v.label])} value={props.hostedVoice} onChange={v => props.setHostedVoice(v as HostedVoiceId)} />
+              {props.hostedVoice === 'device' && <VoicePicker />}
+            </>
+          )}
           <Text style={[styles.muted, { marginTop: 12 }]}>Server: {SERVER_URL}</Text>
         </View>
       </AIIgnore>

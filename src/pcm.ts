@@ -75,3 +75,12 @@ export function resample(samples: Float32Array, fromRate: number, toRate: number
   }
   return out;
 }
+
+/** Loudness of a PCM16 chunk mapped to 0–1 (speech RMS sits around 0.02–0.3). */
+export function pcmLevel(chunk: string): number {
+  const samples = pcm16Base64ToFloat(chunk);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 4) sum += samples[i] * samples[i];
+  const rms = Math.sqrt(sum / Math.max(1, samples.length / 4));
+  return Math.min(1, Math.sqrt(rms) * 1.6);
+}

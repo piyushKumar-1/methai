@@ -238,6 +238,25 @@ model: openAIChatModel({ endpoint: `${API}/chat`, model: 'xor-latest-custom' }),
 turns resend the history. The demo's `deviceVoice({ sendAudio: true })` (Expo) records the
 utterance while the recognizer runs (`expo-speech-recognition` with `recordingOptions.persist`).
 
+### Hosted voices (text-to-speech)
+
+`withHostedSpeech` keeps a voice's listening and speaks the answers with a hosted text-to-speech
+model through any OpenAI-compatible `/audio/speech` endpoint (OpenAI, OpenRouter, or your relay
+that adds the key). Audio streams to the speaker as it arrives when `fetchImpl` can stream
+(`expo/fetch` in Expo); a tap cut-off still reports how much was heard, and a failed request falls
+back to the device voice.
+
+```ts
+voice: withHostedSpeech(deviceVoice(...), {
+  endpoint: `${API}/speech`,           // relays to https://openrouter.ai/api/v1/audio/speech
+  model: 'elevenlabs/eleven-flash-v2.5',
+  voice: 'Jessica',
+  audio: devicePcmAudio(),             // the same PcmAudioIO realtime voice uses
+}),
+```
+
+It asks for `response_format: 'pcm'` and reads the sample rate from the response's content-type.
+
 ### Model wrappers
 
 - `withModelTimeout(model, ms)`: a stuck backend ends in an error instead of silence.
@@ -378,6 +397,29 @@ short-lived tokens. If it can, `connect` can fetch a token from your backend and
 gateway directly with `headers: { Authorization: 'Bearer <token>' }`, with no relay in between.
 
 The agent's own button is wrapped in `AIIgnore`, so the model never sees or presses it.
+
+### ElevenLabs agents
+
+`elevenLabsAgentModel` talks to an [ElevenLabs agent](https://elevenlabs.io/docs/agents-platform)
+over its WebSocket: ElevenLabs does the listening, turn-taking, interruptions and voice, and its LLM
+calls the screen tools, which run in the app. Each session sends the app's prompt with the live
+screen, and the greeting.
+
+```sh
+node scripts/elevenlabs-agent.mjs   # creates or updates the tools and the agent; key in ~/.config/elevenlabs/key
+```
+
+```ts
+const realtime = elevenLabsAgentModel({
+  // Your backend: GET /v1/convai/conversation/get-signed-url?agent_id=… with the API key.
+  connect: async () => ({ url: (await (await fetch(`${API}/elevenlabs/signed-url`)).json()).signed_url }),
+  audio: devicePcmAudio(),
+});
+```
+
+The agent needs prompt overrides allowed, its first message set to `{{greeting}}`, the screen tools
+as client tools, and PCM audio (the script sets all of this up, with 24 kHz audio). Other PCM rates
+are resampled.
 
 ## Voice-reactive glow
 

@@ -56,5 +56,8 @@ checking out.
 | Cloud voice model (default) | The phone records what you say (speech recognition runs alongside for the live transcript and "stop"/"thanks") → the audio goes to `xor-latest-custom` (or `xor-omni`, `xor-latest`) as `input_audio` over `/chat` with tool calls → spoken reply with on-device text-to-speech | Works with the current key (≈1 s per step). The gateway returns no audio, so replies use the phone's voice |
 | On-device speech + chat model | Speech recognition on the phone → `open-fast` (or another gateway chat model) with tool calls → spoken reply with on-device text-to-speech | Works with the current key (`open-fast` ≈ 2 s per step) |
 | Voice model (realtime) | Audio streams to `xor-latest-custom` / `xor-omni` over the gateway's `/v1/realtime` | The current key gets HTTP 403 on `/v1/realtime` (and on `/audio/speech`, `/audio/transcriptions`). Needs gateway-side access |
+| ElevenLabs agent | Audio streams to an ElevenLabs agent (created by `node scripts/elevenlabs-agent.mjs`), which listens, takes turns, speaks, and calls the screen tools in the app. The server hands out a signed URL (`GET /elevenlabs/signed-url`) | Works (≈1 s per tool step). Needs `~/.config/elevenlabs/key` with Agents access |
+
+In the first two modes, **Answer voice** picks a hosted voice through the server's `/speech` (OpenRouter; key in `~/.config/openrouter/key`) or the device voice.
 
 The dev server logs every model call and its tool calls, so you can watch what the agent does.
