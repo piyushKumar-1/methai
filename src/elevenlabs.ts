@@ -25,6 +25,9 @@ export interface ElevenLabsAgentOptions {
 }
 
 const RATE = 24000; // PcmAudioIO's rate
+/** Mic loudness (pcmLevel) that counts as the user talking, for this many 100 ms chunks in a row. */
+const SPEECH_LEVEL = 0.3;
+const SPEECH_CHUNKS = 3;
 /** Audio this long without a new chunk means the agent has finished the current answer. */
 const ANSWER_GAP_MS = 400;
 
@@ -95,6 +98,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
         let answerTimer: ReturnType<typeof setTimeout> | undefined;
         let noSpeechTimer: ReturnType<typeof setTimeout> | undefined;
         let toolQueue = Promise.resolve();
+        let loudChunks = 0;
         let settled = false;
 
         const send = (event: object) => ws.readyState === 1 && ws.send(JSON.stringify(event));
@@ -126,7 +130,12 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
             capturing = true;
             await audio.startCapture(chunk => {
               send({ user_audio_chunk: convert(chunk, RATE, inRate) });
-              if (onLevel) onLevel(pcmLevel(chunk));
+              const level = pcmLevel(chunk);
+              if (onLevel) onLevel(level);
+              // The user is talking: don't time out before ElevenLabs ends their turn (it only
+              // sends the transcript then, and vad_score only when the agent enables it).
+              loudChunks = level >= SPEECH_LEVEL ? loudChunks + 1 : 0;
+              if (loudChunks >= SPEECH_CHUNKS && awaitingSpeech) heardUser();
             });
           }
           awaitingSpeech = true;

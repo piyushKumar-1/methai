@@ -90,7 +90,13 @@ const agent = {
     tts: { model_id: 'eleven_flash_v2', voice_id: arg('voice', 'cgSgspJ2msm6clMCkdW9'), agent_output_audio_format: 'pcm_24000' },
     asr: { user_input_audio_format: 'pcm_24000' },
     turn: { turn_eagerness: 'normal' },
-    conversation: { max_duration_seconds: 600 },
+    // Ignore speech from people nearby, not talking to the agent.
+    vad: { background_voice_detection: true },
+    conversation: {
+      max_duration_seconds: 600,
+      // The app listens for these; vad_score tells it the user is talking before the turn ends.
+      client_events: ['audio', 'interruption', 'agent_response', 'agent_response_correction', 'user_transcript', 'client_tool_call', 'agent_tool_response', 'vad_score'],
+    },
   },
   platform_settings: {
     overrides: {
