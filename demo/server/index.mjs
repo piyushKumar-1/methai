@@ -3,6 +3,7 @@
 //   WS   /realtime  -> relays to the gateway's /v1/realtime (speech-to-speech models)
 //   POST /speech    -> OpenRouter /audio/speech (hosted text-to-speech), streamed back
 //   GET  /elevenlabs/signed-url -> a one-off URL for a conversation with the ElevenLabs agent
+//   GET  /elevenlabs/scribe-url -> a one-off URL for live captions (Scribe realtime speech-to-text)
 // Keys: GRID_API_KEY or ~/.config/grid/key; OPENROUTER_API_KEY or ~/.config/openrouter/key;
 // ELEVENLABS_API_KEY or ~/.config/elevenlabs/key, with the agent from scripts/elevenlabs-agent.mjs
 // (ELEVENLABS_AGENT_ID or ~/.config/elevenlabs/agent_id).   Run: npm run server
@@ -31,6 +32,7 @@ const ts = () => new Date().toISOString().slice(11, 19);
 const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') return res.end('ok');
   if (req.method === 'GET' && req.url === '/elevenlabs/signed-url') return elevenLabsSignedUrl(res);
+  if (req.method === 'GET' && req.url === '/elevenlabs/scribe-url') return elevenLabsScribeUrl(res);
   if (req.method === 'POST' && req.url === '/speech') return speech(req, res);
   if (req.method !== 'POST' || req.url !== '/chat') {
     res.writeHead(404).end();
@@ -71,6 +73,19 @@ async function elevenLabsSignedUrl(res) {
   });
   console.log(`${ts()} elevenlabs signed-url ${upstream.status}`);
   res.writeHead(upstream.status, { 'Content-Type': 'application/json' }).end(await upstream.text());
+}
+
+async function elevenLabsScribeUrl(res) {
+  if (!ELEVENLABS_KEY) return json(res, 500, { error: { message: 'No ElevenLabs key' } });
+  const upstream = await fetch('https://api.elevenlabs.io/v1/single-use-token/realtime_scribe', {
+    method: 'POST',
+    headers: { 'xi-api-key': ELEVENLABS_KEY },
+  });
+  console.log(`${ts()} elevenlabs scribe-token ${upstream.status}`);
+  if (!upstream.ok) return res.writeHead(upstream.status, { 'Content-Type': 'application/json' }).end(await upstream.text());
+  const { token } = await upstream.json();
+  const params = new URLSearchParams({ model_id: 'scribe_v2_realtime', audio_format: 'pcm_24000', commit_strategy: 'vad', token });
+  json(res, 200, { url: `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params}` });
 }
 
 // Streams the audio through as it arrives, so the app can start playing before it's all made.

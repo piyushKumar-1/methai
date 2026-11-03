@@ -203,3 +203,50 @@ test('ElevenLabs agent session: talking keeps it open past the no-speech timeout
   await act(async () => assistant.cancel());
   await act(async () => r.unmount());
 });
+
+test('ElevenLabs agent session: live captions from Scribe while the user talks, not while the agent does', async () => {
+  const { audio, mic } = fakeAudio();
+  const sockets: FakeWS[] = [];
+  class TrackedWS extends FakeWS {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  const realtime = elevenLabsAgentModel({
+    connect: async () => ({ url: 'wss://el/signed' }),
+    liveTranscript: async () => ({ url: 'wss://el/scribe?token=t' }),
+    audio,
+    WebSocketImpl: TrackedWS,
+  });
+  let r!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    r = TestRenderer.create(
+      <ScreenContextProvider assistant={{ greeting: 'Hi', realtime }}>
+        <Shop />
+      </ScreenContextProvider>,
+    );
+  });
+  const assistant = (r.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).assistant!;
+  await act(async () => void assistant.start());
+  await wait(0);
+  const [agent] = sockets;
+  await act(async () => agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 1 } }));
+  await wait(450); // greeting played: listening, captions open
+  const scribe = sockets[1];
+  expect(scribe.url).toBe('wss://el/scribe?token=t');
+  const chunk = floatToPcm16Base64(new Float32Array(2400));
+  mic(chunk);
+  expect(scribe.sent.at(-1)).toEqual({ message_type: 'input_audio_chunk', audio_base_64: chunk, sample_rate: 24000 });
+
+  await act(async () => scribe.server({ message_type: 'partial_transcript', text: 'book an auto to' }));
+  expect(assistant.getStatus().transcript).toBe('book an auto to');
+  await act(async () => {
+    agent.server({ type: 'user_transcript', user_transcription_event: { user_transcript: 'book an auto to Cubbon Park', event_id: 2 } });
+    agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 3 } });
+    scribe.server({ message_type: 'partial_transcript', text: 'Booking your auto' }); // the agent, heard by the mic
+  });
+  expect(assistant.getStatus().transcript).toBe('book an auto to Cubbon Park');
+  await act(async () => assistant.cancel());
+  await act(async () => r.unmount());
+});

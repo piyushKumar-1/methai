@@ -77,6 +77,12 @@ export default function App() {
             if (!res.ok) throw new Error(body.error?.message ?? body.detail?.message ?? `HTTP ${res.status}`);
             return { url: body.signed_url };
           },
+          // Words on screen while you talk (the agent only sends them when your turn ends).
+          liveTranscript: async () => {
+            const res = await fetch(`${SERVER_URL}/elevenlabs/scribe-url`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return { url: (await res.json()).url };
+          },
           audio: speaker(),
         }),
       };

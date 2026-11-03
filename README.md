@@ -421,6 +421,12 @@ The agent needs prompt overrides allowed, its first message set to `{{greeting}}
 as client tools, and PCM audio (the script sets all of this up, with 24 kHz audio). Other PCM rates
 are resampled.
 
+Agents send the user's words only once their turn is over. For words on screen while they talk,
+pass `liveTranscript`: the same mic audio also streams to Scribe realtime speech-to-text, whose
+partial transcripts (about a second behind the voice) become the live transcript. Your backend mints
+the single-use token (`POST /v1/single-use-token/realtime_scribe`; the demo server's
+`GET /elevenlabs/scribe-url`).
+
 ## Voice-reactive glow
 
 While a session runs, an aura of colours flows along the bottom of the screen. It reacts to the

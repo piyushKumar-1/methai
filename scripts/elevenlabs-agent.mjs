@@ -94,8 +94,9 @@ const agent = {
     vad: { background_voice_detection: true },
     conversation: {
       max_duration_seconds: 600,
-      // The app listens for these; vad_score tells it the user is talking before the turn ends.
-      client_events: ['audio', 'interruption', 'agent_response', 'agent_response_correction', 'user_transcript', 'client_tool_call', 'agent_tool_response', 'vad_score'],
+      // The app listens for these: vad_score and tentative_user_transcript show the user's words while
+      // they talk, agent_chat_response_part the reply as it's written.
+      client_events: ['audio', 'interruption', 'agent_response', 'agent_response_correction', 'user_transcript', 'tentative_user_transcript', 'agent_chat_response_part', 'client_tool_call', 'agent_tool_response', 'vad_score'],
     },
   },
   platform_settings: {

@@ -10,6 +10,14 @@ export interface ElevenLabsAgentOptions {
    */
   connect: () => Promise<RealtimeConnection>;
   audio: PcmAudioIO;
+  /**
+   * Live captions of what the user is saying. ElevenLabs agents only send the user's words once
+   * their turn is over, so for words on screen while they talk, the same mic audio also streams to
+   * Scribe realtime speech-to-text. Return its URL with a single-use token, fetched by your backend
+   * from POST /v1/single-use-token/realtime_scribe:
+   * wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&audio_format=pcm_24000&commit_strategy=vad&token=…
+   */
+  liveTranscript?: () => Promise<RealtimeConnection>;
   /** Override the agent's voice for this app. */
   voiceId?: string;
   /** Language code for speech recognition and the voice, e.g. 'en', 'hi'. Default: the agent's. */
@@ -99,6 +107,8 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
         let noSpeechTimer: ReturnType<typeof setTimeout> | undefined;
         let toolQueue = Promise.resolve();
         let loudChunks = 0;
+        let agentSpeaking = false;
+        let captions: any = null; // Scribe realtime socket for live captions
         let settled = false;
 
         const send = (event: object) => ws.readyState === 1 && ws.send(JSON.stringify(event));
@@ -116,20 +126,49 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
           } catch {}
           try {
             ws.close();
+            captions?.close();
           } catch {}
           error ? reject(error) : resolve();
         };
         const onAbort = () => void finish();
         signal.addEventListener('abort', onAbort, { once: true });
 
+        /** Live captions are a nicety: if Scribe can't be reached, the conversation goes on without them. */
+        const openCaptions = () => {
+          if (!opts.liveTranscript) return;
+          void opts
+            .liveTranscript()
+            .then(c => {
+              if (settled) return;
+              captions = new WS(c.url, c.protocols ?? [], c.headers ? { headers: c.headers } : undefined);
+              captions.onmessage = (msg: { data: string }) => {
+                let event: any;
+                try {
+                  event = JSON.parse(msg.data);
+                } catch {
+                  return;
+                }
+                const text = String(event.text ?? '').trim();
+                // While the agent talks, the mic mostly hears the agent: only show the user's words.
+                if (!text || agentSpeaking || settled) return;
+                if (event.message_type === 'partial_transcript' || event.message_type === 'committed_transcript') onTranscript?.(text);
+              };
+              captions.onerror = () => {};
+            })
+            .catch(() => {});
+        };
+
         /** Opens the mic (once) and ends the session if nobody speaks within `timeoutMs`. */
         const listen = async (timeoutMs: number) => {
           phase = 'conversation';
           setState?.('listening');
+          agentSpeaking = false;
           if (!capturing) {
             capturing = true;
+            openCaptions();
             await audio.startCapture(chunk => {
               send({ user_audio_chunk: convert(chunk, RATE, inRate) });
+              if (captions?.readyState === 1) captions.send(JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: chunk, sample_rate: RATE }));
               const level = pcmLevel(chunk);
               if (onLevel) onLevel(level);
               // The user is talking: don't time out before ElevenLabs ends their turn (it only
@@ -243,6 +282,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
               const chunk = event.audio_event?.audio_base_64;
               if (!chunk || muted) break;
               const pcm = convert(chunk, outRate, RATE);
+              agentSpeaking = true;
               audio.play(pcm);
               if (onLevel) onLevel(pcmLevel(pcm));
               if (phase === 'conversation' && tools === 0) setState?.('speaking');
@@ -253,6 +293,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
             case 'interruption':
               // The user talked over the agent (ElevenLabs decides this, with echo in mind).
               audio.flush();
+              agentSpeaking = false;
               clearTimeout(answerTimer);
               heardUser();
               setState?.('listening');
