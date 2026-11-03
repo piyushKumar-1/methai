@@ -12,7 +12,7 @@ export interface HostedSpeechOptions {
   model: string | (() => string);
   voice?: string | (() => string | undefined);
   headers?: Record<string, string>;
-  /** Plays the audio (24 kHz PCM16), e.g. the PcmAudioIO used for realtime voice. */
+  /** Plays the audio (24 kHz PCM16), e.g. the PcmAudioIO used for realtime voice. Closed after each answer. */
   audio: PcmAudioIO;
   /** Sample rate when the response's content-type doesn't give one. Default 24000 (OpenAI's pcm). */
   defaultRate?: number;
@@ -47,7 +47,8 @@ function bytesToFloat(bytes: Uint8Array): Float32Array {
  * Speaks answers with a hosted text-to-speech model instead of the device voice, keeping the
  * device voice for listening (and as the fallback when the hosted one fails). Audio streams to the
  * speaker as it arrives when `fetchImpl` can stream; cutting an answer off reports how much of it
- * was heard, so the model knows.
+ * was heard, so the model knows. The speaker is closed after each answer so speech recognition gets
+ * the audio session back; `audio` reopens on the next play.
  */
 export function withHostedSpeech(voice: VoiceIO, opts: HostedSpeechOptions): VoiceIO {
   const doFetch = opts.fetchImpl ?? fetch;
@@ -135,6 +136,8 @@ export function withHostedSpeech(voice: VoiceIO, opts: HostedSpeechOptions): Voi
         timers.forEach(clearTimeout);
         levelListeners.forEach(l => l(0));
       }
+      // Hand the audio session back: the recognizer needs the mic for the user's turn next.
+      await opts.audio.close().catch(() => {});
     }
     return signal.aborted ? heard() : undefined;
   };

@@ -45,7 +45,7 @@ function fakeAudio() {
     play: chunk => log.push(`play:${chunk}`),
     flush: () => log.push('flush'),
     drained: async () => {},
-    close: async () => {},
+    close: async () => void log.push('close'),
   };
   return { audio, log, mic: (c: string) => onChunk?.(c) };
 }
@@ -168,6 +168,7 @@ test('hosted speech: streams PCM at the reported rate, falls back to the device 
   const played = log.filter(l => l.startsWith('play:')).map(l => l.slice(5));
   expect(played).toHaveLength(2);
   expect(played.join('').length).toBeGreaterThan(0);
+  expect(log.at(-1)).toBe('close'); // the recognizer gets the audio session back
   expect(deviceSpoke).toEqual([]);
 
   fail = true;
