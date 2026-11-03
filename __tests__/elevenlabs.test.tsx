@@ -250,3 +250,33 @@ test('ElevenLabs agent session: live captions from Scribe while the user talks, 
   await act(async () => assistant.cancel());
   await act(async () => r.unmount());
 });
+
+test('ElevenLabs agent session: the mic sends silence while the agent talks, so it never hears itself', async () => {
+  const { audio, mic } = fakeAudio();
+  const realtime = elevenLabsAgentModel({ connect: async () => ({ url: 'wss://el/signed' }), audio, WebSocketImpl: FakeWS });
+  let r!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    r = TestRenderer.create(
+      <ScreenContextProvider assistant={{ greeting: 'Hi', realtime }}>
+        <Shop />
+      </ScreenContextProvider>,
+    );
+  });
+  const assistant = (r.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).assistant!;
+  await act(async () => void assistant.start());
+  await wait(0);
+  const ws = FakeWS.last;
+  const short = floatToPcm16Base64(new Float32Array(240)); // 10 ms
+  await act(async () => ws.server({ type: 'audio', audio_event: { audio_base_64: short, event_id: 1 } }));
+  await wait(450); // greeting over: listening
+  const voice = floatToPcm16Base64(new Float32Array(2400).fill(0.2));
+  mic(voice);
+  expect(ws.sent.at(-1)).toEqual({ user_audio_chunk: voice }); // the user, sent as is
+
+  // The agent answers with 2 s of audio: meanwhile the mic sends silence of the same length.
+  await act(async () => ws.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(48000)), event_id: 2 } }));
+  mic(voice);
+  expect(ws.sent.at(-1)).toEqual({ user_audio_chunk: floatToPcm16Base64(new Float32Array(2400)) });
+  await act(async () => assistant.cancel());
+  await act(async () => r.unmount());
+});

@@ -18,6 +18,12 @@ export interface ElevenLabsAgentOptions {
    * wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&audio_format=pcm_24000&commit_strategy=vad&token=…
    */
   liveTranscript?: () => Promise<RealtimeConnection>;
+  /**
+   * Let the user cut the agent off by talking. Off by default: without echo cancellation (Android,
+   * emulators, laptop speakers) the mic hears the agent and it keeps interrupting itself. While
+   * off, the mic sends silence until the agent's voice has finished playing; a tap still cuts it off.
+   */
+  interruptByVoice?: boolean;
   /** Override the agent's voice for this app. */
   voiceId?: string;
   /** Language code for speech recognition and the voice, e.g. 'en', 'hi'. Default: the agent's. */
@@ -36,6 +42,8 @@ const RATE = 24000; // PcmAudioIO's rate
 /** Mic loudness (pcmLevel) that counts as the user talking, for this many 100 ms chunks in a row. */
 const SPEECH_LEVEL = 0.3;
 const SPEECH_CHUNKS = 3;
+/** Echo in the room outlasts the audio by a moment. */
+const ECHO_TAIL_MS = 300;
 /** Audio this long without a new chunk means the agent has finished the current answer. */
 const ANSWER_GAP_MS = 400;
 
@@ -107,7 +115,8 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
         let noSpeechTimer: ReturnType<typeof setTimeout> | undefined;
         let toolQueue = Promise.resolve();
         let loudChunks = 0;
-        let agentSpeaking = false;
+        let playingUntil = 0; // when the agent's queued voice finishes playing
+        const agentSpeaking = () => Date.now() < playingUntil + ECHO_TAIL_MS;
         let captions: any = null; // Scribe realtime socket for live captions
         let settled = false;
 
@@ -150,7 +159,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
                 }
                 const text = String(event.text ?? '').trim();
                 // While the agent talks, the mic mostly hears the agent: only show the user's words.
-                if (!text || agentSpeaking || settled) return;
+                if (!text || agentSpeaking() || settled) return;
                 if (event.message_type === 'partial_transcript' || event.message_type === 'committed_transcript') onTranscript?.(text);
               };
               captions.onerror = () => {};
@@ -162,12 +171,16 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
         const listen = async (timeoutMs: number) => {
           phase = 'conversation';
           setState?.('listening');
-          agentSpeaking = false;
           if (!capturing) {
             capturing = true;
             openCaptions();
             await audio.startCapture(chunk => {
-              send({ user_audio_chunk: convert(chunk, RATE, inRate) });
+              // While the agent talks the mic mostly hears the agent: send silence so it doesn't
+              // take its own voice for the user's (unless the app has echo cancellation and opts in).
+              const silenced = !opts.interruptByVoice && agentSpeaking();
+              const sent = silenced ? floatToPcm16Base64(new Float32Array(pcm16Base64ToFloat(chunk).length)) : chunk;
+              send({ user_audio_chunk: convert(sent, RATE, inRate) });
+              if (silenced) return;
               if (captions?.readyState === 1) captions.send(JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: chunk, sample_rate: RATE }));
               const level = pcmLevel(chunk);
               if (onLevel) onLevel(level);
@@ -229,6 +242,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
         onInterrupt(() => {
           // There is no "cancel" message: stop playing, and ignore the rest of this answer.
           audio.flush();
+          playingUntil = 0;
           muted = true;
           clearTimeout(answerTimer);
           answered();
@@ -282,8 +296,9 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
               const chunk = event.audio_event?.audio_base_64;
               if (!chunk || muted) break;
               const pcm = convert(chunk, outRate, RATE);
-              agentSpeaking = true;
               audio.play(pcm);
+              // PCM16 mono 24 kHz: 48 bytes per ms, 4 base64 characters per 3 bytes.
+              playingUntil = Math.max(playingUntil, Date.now()) + (pcm.length * 3) / 4 / 48;
               if (onLevel) onLevel(pcmLevel(pcm));
               if (phase === 'conversation' && tools === 0) setState?.('speaking');
               clearTimeout(answerTimer);
@@ -293,7 +308,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
             case 'interruption':
               // The user talked over the agent (ElevenLabs decides this, with echo in mind).
               audio.flush();
-              agentSpeaking = false;
+              playingUntil = 0;
               clearTimeout(answerTimer);
               heardUser();
               setState?.('listening');
