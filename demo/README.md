@@ -58,6 +58,6 @@ checking out.
 | Voice model (realtime) | Audio streams to `xor-latest-custom` / `xor-omni` over the gateway's `/v1/realtime` | The current key gets HTTP 403 on `/v1/realtime` (and on `/audio/speech`, `/audio/transcriptions`). Needs gateway-side access |
 | ElevenLabs agent | Audio streams to an ElevenLabs agent (created by `node scripts/elevenlabs-agent.mjs`), which listens, takes turns, speaks, and calls the screen tools in the app. The server hands out a signed URL (`GET /elevenlabs/signed-url`) | Works (≈1 s per tool step). Needs `~/.config/elevenlabs/key` with Agents access |
 
-In the first two modes, **Answer voice** picks a hosted voice through the server's `/speech` (OpenRouter; key in `~/.config/openrouter/key`) or the device voice.
+In the first two modes, **Answer voice** picks a hosted voice through the server's `/speech` (OpenRouter; key in `~/.config/openrouter/key`) or the device voice. The server also relays OpenRouter chat models at `/openrouter/chat` (same body as `/chat`); free ones that drive the screen well: `nvidia/nemotron-3.5-super-vl:free` (~1 s), `nvidia/nemotron-3.5-lightning:free`, `google/gemma-4-26b-a4b-it:free`.
 
 The dev server logs every model call and its tool calls, so you can watch what the agent does.

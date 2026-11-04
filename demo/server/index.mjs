@@ -1,6 +1,7 @@
 // Dev server for the demo: keeps the gateway key on your laptop.
 //   POST /chat      -> forwards an OpenAI chat-completions body to the gateway
 //   WS   /realtime  -> relays to the gateway's /v1/realtime (speech-to-speech models)
+//   POST /openrouter/chat -> OpenRouter chat completions (same body as /chat)
 //   POST /speech    -> OpenRouter /audio/speech (hosted text-to-speech), streamed back
 //   GET  /elevenlabs/signed-url -> a one-off URL for a conversation with the ElevenLabs agent
 //   GET  /elevenlabs/scribe-url -> a one-off URL for live captions (Scribe realtime speech-to-text)
@@ -34,18 +35,22 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/elevenlabs/signed-url') return elevenLabsSignedUrl(res);
   if (req.method === 'GET' && req.url === '/elevenlabs/scribe-url') return elevenLabsScribeUrl(res);
   if (req.method === 'POST' && req.url === '/speech') return speech(req, res);
-  if (req.method !== 'POST' || req.url !== '/chat') {
-    res.writeHead(404).end();
-    return;
-  }
+  if (req.method === 'POST' && req.url === '/openrouter/chat') return chat(req, res, 'https://openrouter.ai/api/v1', OPENROUTER_KEY, 'openrouter');
+  if (req.method === 'POST' && req.url === '/chat') return chat(req, res, BASE, KEY, 'chat');
+  res.writeHead(404).end();
+});
+
+/** Forwards an OpenAI chat-completions body with the key, and logs the tool calls or reply. */
+async function chat(req, res, base, key, label) {
+  if (!key) return json(res, 500, { error: { message: `No API key for ${label}` } });
   let raw = '';
   for await (const chunk of req) raw += chunk;
   const t0 = Date.now();
   try {
     const body = JSON.parse(raw);
-    const upstream = await fetch(`${BASE}/chat/completions`, {
+    const upstream = await fetch(`${base}/chat/completions`, {
       method: 'POST',
-      headers: { ...auth, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const text = await upstream.text();
@@ -56,13 +61,13 @@ const server = createServer(async (req, res) => {
         ? msg.tool_calls.map(c => `${c.function.name}(${c.function.arguments})`).join(', ')
         : JSON.stringify((msg?.content ?? '').slice(0, 120));
     } catch {}
-    console.log(`${ts()} chat ${body.model} ${upstream.status} ${Date.now() - t0}ms  ${summary || text.slice(0, 200)}`);
+    console.log(`${ts()} ${label} ${body.model} ${upstream.status} ${Date.now() - t0}ms  ${summary || text.slice(0, 200)}`);
     res.writeHead(upstream.status, { 'Content-Type': 'application/json' }).end(text);
   } catch (e) {
-    console.error(`${ts()} chat error`, e.message);
+    console.error(`${ts()} ${label} error`, e.message);
     res.writeHead(502, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: e.message } }));
   }
-});
+}
 
 const json = (res, status, body) => res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
 
