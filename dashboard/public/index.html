@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>methai dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #16181d; --muted: #646b78; --line: #e3e6eb; --accent: #5b4cf0;
+    --accent-soft: #eeecfe; --ok: #127a4a; --ok-soft: #e4f5ec; --bad: #b42318; --bad-soft: #fdecea; --code: #f2f3f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --panel: #171a20; --text: #e8eaee; --muted: #9aa1ad; --line: #2a2f38; --accent: #8b80ff;
+      --accent-soft: #24213f; --ok: #4cc38a; --ok-soft: #14291f; --bad: #f97066; --bad-soft: #2d1614; --code: #1f232b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header.top { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header.top h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+  header.top .sp { flex: 1; }
+  .layout { display: grid; grid-template-columns: 240px 1fr; min-height: calc(100vh - 53px); }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } aside { border-right: 0 !important; border-bottom: 1px solid var(--line); } }
+  aside { border-right: 1px solid var(--line); padding: 14px; background: var(--panel); }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 4px 4px 8px; }
+  .app { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+  .app:hover { background: var(--code); }
+  .app.on { background: var(--accent-soft); }
+  .app small { display: block; color: var(--muted); }
+  main { padding: 18px 22px 60px; max-width: 980px; width: 100%; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .bar h2 { margin: 0; font-size: 20px; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--code); color: var(--muted); }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .url { display: flex; align-items: center; gap: 8px; background: var(--code); border-radius: 8px; padding: 6px 10px; font: 12px ui-monospace, Menlo, monospace; overflow: hidden; }
+  .url span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button, .btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 7px 12px; cursor: pointer; text-decoration: none; }
+  button:hover, .btn:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 6px 0 16px; overflow-x: auto; }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; color: var(--muted); }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 12px; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field.wide { grid-column: 1 / -1; }
+  .field label { font-weight: 600; font-size: 13px; }
+  .field .help { color: var(--muted); font-size: 12px; }
+  input[type=text], input[type=number], select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; width: 100%; }
+  textarea { min-height: 72px; resize: vertical; }
+  textarea.code { font: 12px/1.5 ui-monospace, Menlo, monospace; min-height: 420px; }
+  .check { flex-direction: row; align-items: center; gap: 8px; }
+  .rows { display: flex; flex-direction: column; gap: 8px; }
+  .row { display: grid; grid-template-columns: 1fr 2fr 1fr auto; gap: 6px; }
+  .row.two { grid-template-columns: 1fr 3fr auto; }
+  .msg { border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .msg.bad { background: var(--bad-soft); color: var(--bad); }
+  .msg.ok { background: var(--ok-soft); color: var(--ok); }
+  .msg ul { margin: 4px 0 0 18px; padding: 0; }
+  .publish { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center; padding: 12px 0; background: linear-gradient(transparent, var(--bg) 30%); }
+  .publish input { flex: 1; }
+  .hist { width: 100%; border-collapse: collapse; }
+  .hist td, .hist th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .hist th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .mono { font: 12px ui-monospace, Menlo, monospace; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>methai dashboard</h1>
+  <span class="sp"></span>
+  <button id="tokenBtn" class="small" title="Writes need a token when the server sets METHAI_DASHBOARD_TOKEN">Token</button>
+</header>
+<div class="layout">
+  <aside>
+    <h2>Apps</h2>
+    <div id="apps"></div>
+    <button id="newApp" style="width:100%;margin-top:10px">+ New app</button>
+  </aside>
+  <main id="main"><div class="empty">Pick an app, or create one.</div></main>
+</div>
+
+<script>
+const $ = (sel, el = document) => el.querySelector(sel);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (k === 'value') el.value = v;
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid.nodeType ? kid : String(kid));
+  return el;
+};
+
+let token = '';
+try { token = localStorage.getItem('methai.token') ?? ''; } catch {}
+const api = async (method, path, body) => {
+  const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) }, body: body && JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { data });
+  return data;
+};
+
+// ---- config paths -----------------------------------------------------------
+const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+function set(obj, path, value) {
+  const keys = path.split('.');
+  let o = obj;
+  for (const k of keys.slice(0, -1)) o = o[k] && typeof o[k] === 'object' ? o[k] : (o[k] = {});
+  const last = keys.at(-1);
+  if (value === undefined || value === '' || (Array.isArray(value) && !value.length)) delete o[last];
+  else o[last] = value;
+}
+
+// ---- state ------------------------------------------------------------------
+const state = { apps: [], id: null, meta: null, config: null, tab: new URLSearchParams(location.search).get('tab') ?? 'voice', errors: null, saved: null, dirty: false };
+
+async function loadApps() {
+  state.apps = await api('GET', '/api/apps');
+  renderApps();
+}
+
+async function open(id) {
+  const data = await api('GET', `/api/apps/${id}`);
+  Object.assign(state, { id, meta: data, config: structuredClone(data.config), errors: null, saved: null, dirty: false });
+  renderApps();
+  render();
+}
+
+function renderApps() {
+  const list = $('#apps');
+  list.replaceChildren(
+    ...state.apps.map(a =>
+      h('button', { class: `app${a.id === state.id ? ' on' : ''}`, onclick: () => open(a.id) }, a.name || a.id, h('small', {}, `${a.id} · r${a.revision} · ${a.enabled ? a.voice ?? 'no voice' : 'off'}`)),
+    ),
+    ...(state.apps.length ? [] : [h('div', { class: 'muted', style: 'padding:6px 4px' }, 'No apps yet.')]),
+  );
+}
+
+const changed = () => { state.dirty = true; state.saved = null; renderStatus(); };
+
+// ---- fields -----------------------------------------------------------------
+// {path, label, kind: text|number|bool|select|lines|json|textarea|map, options, help, wide}
+function field(f) {
+  const value = get(state.config, f.path);
+  const id = `f_${f.path.replace(/\W/g, '_')}`;
+  let input;
+  const update = v => { set(state.config, f.path, v); changed(); };
+  switch (f.kind) {
+    case 'bool':
+      input = h('input', { type: 'checkbox', id, checked: value ?? f.default ?? false, onchange: e => update(e.target.checked) });
+      return h('div', { class: `field check${f.wide ? ' wide' : ''}` }, input, h('label', { for: id }, f.label), f.help && h('span', { class: 'help' }, `— ${f.help}`));
+    case 'select':
+      input = h('select', { id, onchange: e => update(e.target.value || undefined) }, h('option', { value: '' }, f.placeholder ?? '(default)'), ...f.options.map(o => h('option', { value: o, selected: o === value }, o)));
+      break;
+    case 'number':
+      input = h('input', { type: 'number', id, value: value ?? '', placeholder: f.placeholder ?? '', oninput: e => update(e.target.value === '' ? undefined : Number(e.target.value)) });
+      break;
+    case 'lines':
+      input = h('textarea', { id, placeholder: f.placeholder ?? 'One per line', oninput: e => update(e.target.value.split('\n').map(s => s.trim()).filter(Boolean)) }, (value ?? []).join('\n'));
+      break;
+    case 'map':
+      input = h('textarea', { id, placeholder: f.placeholder ?? 'key = value, one per line',
+        oninput: e => update(Object.fromEntries(e.target.value.split('\n').map(l => l.split('=')).filter(p => p.length > 1 && p[0].trim()).map(([k, ...v]) => [k.trim(), v.join('=').trim()]))) },
+        Object.entries(value ?? {}).map(([k, v]) => `${k} = ${v}`).join('\n'));
+      break;
+    case 'json':
+      input = h('textarea', { id, class: 'code', style: 'min-height:90px', placeholder: '{ }',
+        oninput: e => { try { update(e.target.value.trim() ? JSON.parse(e.target.value) : undefined); e.target.style.borderColor = ''; } catch { e.target.style.borderColor = 'var(--bad)'; } } },
+        value === undefined ? '' : JSON.stringify(value, null, 2));
+      break;
+    case 'textarea':
+      input = h('textarea', { id, placeholder: f.placeholder ?? '', oninput: e => update(e.target.value) }, value ?? '');
+      break;
+    default:
+      input = h('input', { type: 'text', id, value: value ?? '', placeholder: f.placeholder ?? '', oninput: e => update(e.target.value) });
+  }
+  return h('div', { class: `field${f.wide ? ' wide' : ''}` }, h('label', { for: id }, f.label), input, f.help && h('span', { class: 'help' }, f.help));
+}
+const card = (title, fields, extra) => h('div', { class: 'card' }, h('h3', {}, title), h('div', { class: 'grid' }, ...fields.map(field)), extra);
+
+// ---- tabs -------------------------------------------------------------------
+const VOICE_FIELDS = {
+  device: [
+    { path: 'voice.model.endpoint', label: 'Chat endpoint', help: 'OpenAI-compatible chat completions (your relay)', wide: true },
+    { path: 'voice.model.model', label: 'Model' },
+    { path: 'voice.model.fallbackModels', label: 'Fallback models', kind: 'lines', help: 'Tried in order when the model fails or is slow' },
+    { path: 'voice.model.attemptTimeoutMs', label: 'Per-model time limit (ms)', kind: 'number' },
+    { path: 'voice.model.timeoutMs', label: 'Whole call time limit (ms)', kind: 'number' },
+    { path: 'voice.model.extraBody', label: 'Extra request fields', kind: 'json', help: 'e.g. {"temperature": 0.2}', wide: true },
+    { path: 'voice.speech.endpoint', label: 'Hosted voice endpoint', help: "Empty: the phone's voice. e.g. http://relay/speech", wide: true },
+    { path: 'voice.speech.model', label: 'Voice model', help: 'sarvam/bulbul:v3, elevenlabs/eleven-flash-v2.5…' },
+    { path: 'voice.speech.voice', label: 'Voice', help: 'kavya, Jessica…' },
+    { path: 'voice.speech.language', label: 'Voice language', help: "Empty: the app's language" },
+  ],
+  deepgram: [
+    { path: 'voice.url', label: 'Relay URL', help: 'wss:// relay that adds the Deepgram key', wide: true },
+    { path: 'voice.language', label: 'Language', help: "Empty: the app's. Picks recognizer and voice (en, hi, kn, ta…)" },
+    { path: 'voice.listen', label: 'Listen (override)', kind: 'json', wide: true },
+    { path: 'voice.think', label: 'Think (override)', kind: 'json', help: 'Default {"type":"open_ai","model":"gpt-4o-mini"}', wide: true },
+    { path: 'voice.speak', label: 'Speak (override)', kind: 'json', wide: true },
+  ],
+  elevenlabs: [
+    { path: 'voice.url', label: 'Signed URL endpoint', help: 'Returns { signed_url }', wide: true },
+    { path: 'voice.captionsUrl', label: 'Live captions endpoint', help: 'Returns { url } for Scribe realtime', wide: true },
+    { path: 'voice.voiceId', label: 'Voice id' },
+    { path: 'voice.language', label: 'Language' },
+  ],
+  'openai-realtime': [
+    { path: 'voice.url', label: 'Realtime URL', wide: true },
+    { path: 'voice.voice', label: 'Voice' },
+    { path: 'voice.turnDetection', label: 'Turn detection', kind: 'select', options: ['semantic', 'server'] },
+    { path: 'voice.eagerness', label: 'Eagerness', kind: 'select', options: ['low', 'medium', 'high', 'auto'] },
+  ],
+};
+
+function voiceTab() {
+  const type = get(state.config, 'voice.type');
+  const typeSelect = h('select', {
+    onchange: e => { state.config.voice = { type: e.target.value }; changed(); render(); },
+  }, ...Object.keys(VOICE_FIELDS).map(t => h('option', { value: t, selected: t === type }, {
+    device: "Phone's speech + chat model", deepgram: 'Deepgram voice agent', elevenlabs: 'ElevenLabs agent', 'openai-realtime': 'OpenAI Realtime',
+  }[t])));
+  return [
+    card('Assistant', [
+      { path: 'enabled', label: 'Enabled', kind: 'bool', default: true, help: 'Off hides the assistant in the app (kill switch)', wide: true },
+    ], h('div', { class: 'field', style: 'margin-top:12px' }, h('label', {}, 'How it listens, thinks and talks'), typeSelect)),
+    type && card('Voice settings', VOICE_FIELDS[type] ?? []),
+  ];
+}
+
+const behaviourTab = () => [
+  card('Conversation', [
+    { path: 'assistant.greeting', label: 'Greeting', placeholder: 'How can I help?', wide: true },
+    { path: 'assistant.greetings', label: 'Greetings by language', kind: 'map', placeholder: 'hi = बताइए क्या करना है?\nkn = ಏನು ಮಾಡಬೇಕು?', wide: true },
+    { path: 'assistant.farewell', label: 'Farewell' },
+    { path: 'assistant.noInputReply', label: 'When nothing was heard' },
+    { path: 'assistant.errorReply', label: 'When a turn fails', wide: true },
+    { path: 'assistant.conversation', label: 'Conversation', kind: 'select', options: ['continuous', 'single'] },
+    { path: 'assistant.voiceInterruptions', label: 'Interruptions (default)', kind: 'select', options: ['smart', 'off', 'raw'], help: 'smart: talk over it to stop it · off: take turns. Users can switch.' },
+    { path: 'assistant.endOnSilence', label: 'End the session on silence', kind: 'bool' },
+    { path: 'assistant.speakProgress', label: 'Say what it is doing while it works', kind: 'bool' },
+    { path: 'assistant.stopPhrases', label: 'Stop phrases', kind: 'lines', placeholder: "that's all\nthanks, bye", wide: true },
+  ]),
+  card('Timing', [
+    { path: 'assistant.noSpeechTimeoutMs', label: 'Silence after the greeting (ms)', kind: 'number', placeholder: '8000' },
+    { path: 'assistant.idleTimeoutMs', label: 'Silence after an answer (ms)', kind: 'number', placeholder: '12000' },
+    { path: 'assistant.followUpTimeoutMs', label: 'Wait for a reply, single mode (ms)', kind: 'number', placeholder: '4000' },
+    { path: 'assistant.resumeWithinMs', label: 'Resume the last conversation within (ms)', kind: 'number', placeholder: '0' },
+    { path: 'assistant.maxSteps', label: 'Max tool steps per request', kind: 'number', placeholder: '20' },
+    { path: 'assistant.maxTurns', label: 'Max turns per session', kind: 'number', placeholder: '30' },
+  ]),
+  card('Prompt', [{ path: 'assistant.systemPrompt', label: 'Agent rules (replaces the built-in ones)', kind: 'textarea', wide: true, help: 'Empty: the built-in rules' }]),
+];
+
+function safetyTab() {
+  const tester = h('input', { type: 'text', placeholder: 'Try a label, e.g. Book Ride @ ₹45' });
+  const result = h('span', { class: 'help' });
+  const test = () => {
+    const label = tester.value;
+    if (!label) return void (result.textContent = '');
+    const hit = (get(state.config, 'confirm.labelPatterns') ?? []).find(p => { try { return new RegExp(p, 'i').test(label); } catch { return false; } });
+    result.textContent = hit ? `Needs a yes (matches ${hit})` : 'Pressed without asking';
+  };
+  tester.addEventListener('input', test);
+  return [card('Ask before pressing', [
+    { path: 'confirm.labelPatterns', label: 'Label patterns', kind: 'lines', placeholder: '^book (a )?(ride|auto|cab)\\b.*(@|₹)\n\\bpay\\b', help: 'Case-insensitive regular expressions on the control’s label', wide: true },
+    { path: 'confirm.ids', label: 'Element ids', kind: 'lines', placeholder: 'review_journey_button_cta', wide: true },
+  ], h('div', { class: 'field', style: 'margin-top:12px' }, h('label', {}, 'Test a label'), tester, result))];
+}
+
+function rowsEditor(path, columns) {
+  const items = () => get(state.config, path) ?? [];
+  const wrap = h('div', { class: 'rows' });
+  const draw = () => {
+    wrap.replaceChildren(
+      ...items().map((item, i) => h('div', { class: `row${columns.length === 2 ? ' two' : ''}` },
+        ...columns.map(c => h('input', { type: 'text', placeholder: c.label, value: item[c.key] ?? '', oninput: e => { const list = items(); list[i] = { ...list[i], [c.key]: e.target.value || undefined }; set(state.config, path, list); changed(); } })),
+        h('button', { class: 'small', title: 'Remove', onclick: () => { const list = items(); list.splice(i, 1); set(state.config, path, list); changed(); draw(); } }, '✕'))),
+      h('div', {}, h('button', { class: 'small', onclick: () => { set(state.config, path, [...items(), {}]); changed(); draw(); } }, '+ Add')),
+    );
+  };
+  draw();
+  return wrap;
+}
+
+const appTab = () => [
+  card('The app', [
+    { path: 'app.name', label: 'Name' },
+    { path: 'app.description', label: 'What it is and who it is for', kind: 'textarea', wide: true },
+    { path: 'app.instructions', label: 'Rules, tone, domain terms', kind: 'textarea', wide: true },
+  ]),
+  h('div', { class: 'card' }, h('h3', {}, 'Screens'), rowsEditor('app.screens', [{ key: 'name', label: 'Name' }, { key: 'description', label: 'What is on it' }, { key: 'howToReach', label: 'How to reach it' }])),
+  h('div', { class: 'card' }, h('h3', {}, 'Common flows'), rowsEditor('app.flows', [{ key: 'name', label: 'Task' }, { key: 'steps', label: 'Steps' }])),
+];
+
+function jsonTab() {
+  const area = h('textarea', { class: 'code' }, JSON.stringify(state.config, null, 2));
+  const note = h('span', { class: 'help' });
+  return [h('div', { class: 'card' }, h('h3', {}, 'methai.json'), area,
+    h('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:10px' },
+      h('button', { onclick: () => { try { state.config = JSON.parse(area.value); changed(); note.textContent = 'Applied. Publish to make it live.'; } catch (e) { note.textContent = `Not JSON: ${e.message}`; } } }, 'Apply'),
+      note))];
+}
+
+async function historyTab() {
+  const list = await api('GET', `/api/apps/${state.id}/revisions`);
+  const viewer = h('pre', { class: 'mono card hidden', style: 'white-space:pre-wrap;max-height:360px;overflow:auto' });
+  return [h('div', { class: 'card' }, h('h3', {}, 'Revisions'), h('table', { class: 'hist' },
+    h('tr', {}, h('th', {}, 'Rev'), h('th', {}, 'Published'), h('th', {}, 'Note'), h('th', {}, 'ETag'), h('th', {})),
+    ...list.map(r => h('tr', {},
+      h('td', {}, `r${r.revision}`, r.revision === state.meta.revision ? h('div', { class: 'pill ok' }, 'live') : ''),
+      h('td', {}, new Date(r.publishedAt).toLocaleString()),
+      h('td', {}, r.note || h('span', { class: 'muted' }, '—')),
+      h('td', { class: 'mono muted' }, r.etag.slice(0, 12) + '…'),
+      h('td', { style: 'white-space:nowrap' },
+        h('button', { class: 'small', onclick: async () => { const rev = await api('GET', `/api/apps/${state.id}/revisions/${r.revision}`); viewer.textContent = JSON.stringify(rev.config, null, 2); viewer.classList.remove('hidden'); } }, 'View'), ' ',
+        r.revision !== state.meta.revision && h('button', { class: 'small', onclick: async () => { if (!confirm(`Publish revision ${r.revision} again?`)) return; await api('POST', `/api/apps/${state.id}/rollback`, { revision: r.revision }); await loadApps(); await open(state.id); state.tab = 'history'; render(); } }, 'Roll back'))))),
+  ), viewer];
+}
+
+// ---- page -------------------------------------------------------------------
+const TABS = { voice: 'Voice', behaviour: 'Behaviour', safety: 'Safety', app: 'App context', json: 'JSON', history: 'History' };
+
+function renderStatus() {
+  const el = $('#status');
+  if (!el) return;
+  el.replaceChildren(
+    ...[
+      state.errors && h('div', { class: 'msg bad' }, 'Not published:', h('ul', {}, ...state.errors.map(e => h('li', {}, e)))),
+      state.saved && h('div', { class: 'msg ok' }, state.saved),
+    ].filter(Boolean),
+  );
+  $('#publishBtn').textContent = state.dirty ? 'Publish changes' : 'Published';
+  $('#publishBtn').disabled = !state.dirty;
+}
+
+async function render() {
+  if (!state.id) return;
+  const fileUrl = `${location.origin}${state.meta.url}`;
+  const body = h('div');
+  const tabs = h('div', { class: 'tabs' }, ...Object.entries(TABS).map(([k, label]) =>
+    h('button', { class: k === state.tab ? 'on' : '', onclick: () => { state.tab = k; render(); } }, label)));
+  const note = h('input', { type: 'text', placeholder: 'What changed (optional)' });
+  $('#main').replaceChildren(...[
+    h('div', { class: 'bar' },
+      h('h2', {}, state.meta.name || state.id),
+      h('span', { class: `pill ${state.meta.enabled ? 'ok' : 'bad'}` }, state.meta.enabled ? 'enabled' : 'off'),
+      h('span', { class: 'pill' }, `revision ${state.meta.revision}`),
+      h('span', { class: 'sp', style: 'flex:1' }),
+      h('a', { class: 'btn', href: state.meta.url, download: 'methai.json' }, 'Download methai.json')),
+    h('div', { class: 'url', title: 'Pass this to methai.init() in the app' },
+      h('span', {}, `methai.init('${fileUrl}')`),
+      h('button', { class: 'small', onclick: e => { navigator.clipboard?.writeText(fileUrl); e.target.textContent = 'Copied'; } }, 'Copy URL')),
+    tabs,
+    h('div', { id: 'status' }),
+    body,
+    state.tab !== 'history' && h('div', { class: 'publish' }, note,
+      h('button', { id: 'publishBtn', class: 'primary', onclick: () => publishNow(note.value) }, 'Published')),
+  ].filter(Boolean));
+  const content = { voice: voiceTab, behaviour: behaviourTab, safety: safetyTab, app: appTab, json: jsonTab, history: historyTab }[state.tab];
+  body.replaceChildren(...(await content()).filter(Boolean));
+  if (state.tab !== 'history') renderStatus();
+}
+
+async function publishNow(note) {
+  try {
+    const res = await api('PUT', `/api/apps/${state.id}`, { config: state.config, note });
+    state.errors = null;
+    await loadApps();
+    const data = await api('GET', `/api/apps/${state.id}`);
+    Object.assign(state, { meta: data, config: structuredClone(data.config), dirty: false, saved: `Published revision ${res.revision}. Apps get it on their next start (or methai.refresh()).` });
+    render();
+  } catch (e) {
+    state.errors = e.data?.errors ?? [e.message];
+    renderStatus();
+  }
+}
+
+$('#newApp').addEventListener('click', async () => {
+  const id = prompt('App id (lowercase, digits, dashes), e.g. namma-yatri');
+  if (!id) return;
+  try { await api('POST', '/api/apps', { id }); await loadApps(); await open(id); } catch (e) { alert(e.message); }
+});
+$('#tokenBtn').addEventListener('click', () => {
+  const t = prompt('Dashboard token (kept in this browser)', token);
+  if (t === null) return;
+  token = t;
+  try { localStorage.setItem('methai.token', t); } catch {}
+});
+window.addEventListener('beforeunload', e => { if (state.dirty) e.preventDefault(); });
+
+loadApps().then(() => state.apps[0] && open(state.apps[0].id)).catch(e => ($('#main').textContent = e.message));
+</script>
+</body>
+</html>

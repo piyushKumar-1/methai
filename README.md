@@ -309,6 +309,31 @@ last 1.5 s then go to the agent, so their first words aren't lost. 'raw' sends t
 reliable echo cancellation); 'off' leaves only the tap. On Android, open the mic with the voice
 communication input preset so the platform cancels the speaker too.
 
+### Remote configuration (methai dashboard)
+
+What doesn't need code — which voice and models, greetings per language, timings, interruptions,
+controls that need a yes, the app description, a kill switch — can live in a `MethaiConfig`, edited
+and published in the dashboard (`dashboard/`, see its README) and loaded at start-up:
+
+```ts
+import { methai, toAssistantConfig } from 'react-native-screen-context';
+
+// A URL: fetched with the cached ETag; on 304 (or offline) the saved copy is used.
+const config = await methai.init('https://config.example.com/apps/my-app/methai.json', {
+  storage: { getItem: k => mmkv.getString(k), setItem: (k, v) => mmkv.set(k, v) },
+  fallback: BUILT_IN_CONFIG, // used when there is neither a network answer nor a saved copy
+});
+// …or the config itself: methai.init({ version: 1, voice: {…} })
+
+const assistant = toAssistantConfig(config, {
+  deviceVoice, audio: devicePcmAudio(), language: () => appLocale, userContext,
+}); // undefined when the config turns the assistant off
+methai.subscribe(state => rebuild(state.config)); // methai.refresh() on foreground: 304 when unchanged
+```
+
+`methai.state` says where the config came from (`network`, `not-modified`, `cache`, `fallback`,
+`inline`) and why the network copy wasn't used, if it wasn't. `validateMethaiConfig` checks one.
+
 ### Model wrappers
 
 - `withModelTimeout(model, ms)`: a stuck backend ends in an error instead of silence.
