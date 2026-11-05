@@ -2,7 +2,12 @@ import type { RealtimeVoiceModel } from './session';
 import { voiceAgentModel, type VoiceAgentOptions, type VoiceAgentProtocol } from './voiceAgent';
 
 export interface DeepgramAgentSettings {
-  /** Speech recognition. Default `{ type: 'deepgram', model: 'nova-3' }`. */
+  /**
+   * Speech recognition. Default Flux (`{ type: 'deepgram', version: 'v2', model: 'flux-general-en' }`):
+   * it ends the user's turn from what they said, so a pause mid-sentence ("add a tip of… ninety
+   * nine") doesn't split it in two, as Nova-3's silence-based endpointing does. Use
+   * flux-general-multi for other languages.
+   */
   listen?: Record<string, unknown>;
   /** The LLM that calls the screen tools. Default `{ type: 'open_ai', model: 'gpt-4o-mini' }` (run by Deepgram). */
   think?: Record<string, unknown>;
@@ -37,7 +42,7 @@ export function deepgramProtocol(settings: DeepgramAgentSettings = {}): VoiceAge
           },
           agent: {
             ...(settings.language && { language: settings.language }),
-            listen: { provider: settings.listen ?? { type: 'deepgram', model: 'nova-3' } },
+            listen: { provider: settings.listen ?? { type: 'deepgram', version: 'v2', model: 'flux-general-en' } },
             think: {
               provider: settings.think ?? { type: 'open_ai', model: 'gpt-4o-mini' },
               prompt: `${instructions}\n\nCurrent screen:\n${screen}`,

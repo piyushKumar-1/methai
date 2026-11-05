@@ -265,12 +265,12 @@ test('a greeting function can hand the opening to the model, which continues a r
   await act(async () => renderer.unmount());
 });
 
-test('screenChangeNote tells the model when the user moved on by themselves', () => {
+test('screenChangeNote tells the model the screen moved on since it acted, without blaming the user', () => {
   const choose = 'Screen: Home (ChooseRide stage)\nVisible text:\n- Choose a ride';
   const tracking = 'Screen: RideTracking\nVisible text:\n- Driver is on the way';
   expect(screenChangeNote(choose, tracking)).toBe(
-    '(The user changed the screen themselves since you last acted: it was "Home (ChooseRide stage)", now it is "RideTracking". ' +
-      'Whatever you were doing may be done or dropped; go by the current screen.)',
+    '(The screen changed since you last acted: it was "Home (ChooseRide stage)", now it is "RideTracking". ' +
+      'Your last action may have finished loading, or the user moved on; go by the current screen.)',
   );
   expect(screenChangeNote(choose, `${choose}\n- 4 mins`)).toBe(''); // same screen, new details
   expect(screenChangeNote('', tracking)).toBe('');

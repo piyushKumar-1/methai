@@ -123,16 +123,18 @@ const MAX_LOG = 50;
 const screenTitle = (description: string) => description.split('\n', 1)[0]?.replace(/^Screen:\s*/, '').trim() ?? '';
 
 /**
- * Tells the model the screen changed while it wasn't acting, i.e. the user tapped around
- * themselves, so it goes by the current screen instead of carrying on with the old task.
+ * Tells the model the screen changed while it wasn't acting, so it goes by the current screen
+ * instead of carrying on with the old task. Who changed it isn't known: the user may have tapped
+ * around, or the model's own last action finished loading (a booking moving on to "looking for a
+ * driver"); saying it was the user made models doubt actions that had worked.
  */
 export function screenChangeNote(lastSeen: string, now: string): string {
   const was = screenTitle(lastSeen);
   const is = screenTitle(now);
   if (!was || !is || was === is) return '';
   return (
-    `(The user changed the screen themselves since you last acted: it was "${was}", now it is "${is}". ` +
-    'Whatever you were doing may be done or dropped; go by the current screen.)'
+    `(The screen changed since you last acted: it was "${was}", now it is "${is}". ` +
+    'Your last action may have finished loading, or the user moved on; go by the current screen.)'
   );
 }
 
@@ -630,7 +632,7 @@ export class VoiceAssistant {
       if (ms !== undefined) timer = setTimeout(() => this.endWith('silence'), ms);
     };
 
-    /** Before the user's turn is answered: if they changed the screen themselves, tell the agent. */
+    /** Before the user's turn is answered: if the screen changed since the agent last acted, tell it. */
     const checkScreen = async () => {
       if (screenCheckedForTurn === this.userTurns || !controls.context) return;
       screenCheckedForTurn = this.userTurns;

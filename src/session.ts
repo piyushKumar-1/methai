@@ -27,7 +27,7 @@ export type RealtimeEvent =
 export interface RealtimeControls {
   /** The user tapped to cut the agent off: stop playing its reply. */
   interrupt?(): void;
-  /** Tell the agent something without a reply (e.g. the user changed the screen themselves). */
+  /** Tell the agent something without a reply (e.g. the screen changed since it last acted). */
   context?(text: string): void;
   /** The user typed a request instead of saying it: the agent answers it like speech. */
   text?(text: string): void;
