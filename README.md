@@ -256,6 +256,15 @@ voice: withHostedSpeech(deviceVoice(...), {
 ```
 
 It asks for `response_format: 'pcm'` and reads the sample rate from the response's content-type.
+`language` (a value or getter, e.g. `() => appLocale`) is sent along for voices that need it: the
+demo server's `/speech` routes `sarvam/bulbul:v3` to Sarvam, whose Bulbul voices speak Hindi,
+Kannada, Tamil, Telugu, Malayalam, Bengali, Marathi, Gujarati, Punjabi, Odia and Indian English.
+
+**Languages with Deepgram.** `deepgramAgentModel({ language })` (a value or a getter) picks the
+recognizer and voice: Flux for English; Flux multilingual for Hindi (hinted with English) and the
+other Flux languages; Nova-3 for Kannada, Tamil, Telugu, Bengali, Marathi, Gujarati, Punjabi and
+more. Deepgram's own voices speak English and Spanish; for other languages it uses an ElevenLabs v3
+voice (`elevenLabsVoice()`), with the ElevenLabs key added by your relay.
 
 ### Same behaviour for every kind of assistant
 

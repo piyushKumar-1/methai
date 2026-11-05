@@ -3,18 +3,24 @@ import { voiceAgentModel, type VoiceAgentOptions, type VoiceAgentProtocol } from
 
 export interface DeepgramAgentSettings {
   /**
-   * Speech recognition. Default Flux (`{ type: 'deepgram', version: 'v2', model: 'flux-general-en' }`):
-   * it ends the user's turn from what they said, so a pause mid-sentence ("add a tip of… ninety
-   * nine") doesn't split it in two, as Nova-3's silence-based endpointing does. Use
-   * flux-general-multi for other languages.
+   * The conversation's language (BCP-47, e.g. 'en', 'hi', 'kn', 'ta'), or a getter read at the start
+   * of each session so it can follow the app's language. It picks the speech recognition and voice
+   * unless `listen` / `speak` are given:
+   * - English: Flux, which ends turns from what was said, and an Aura-2 voice.
+   * - Hindi and the other Flux languages (es, fr, de, ru, pt, ja, it, nl): Flux multilingual, hinted
+   *   with the language and English (people mix them).
+   * - Other languages Nova-3 knows (Kannada, Tamil, Telugu, Bengali, Marathi, Gujarati, Punjabi…):
+   *   Nova-3 in that language.
+   * - The voice: Aura-2 for English and Spanish; otherwise ElevenLabs v3 (70+ languages), whose key
+   *   your relay adds (see `elevenLabsVoice`).
    */
+  language?: string | (() => string | undefined);
+  /** Speech recognition, overriding the language's default. */
   listen?: Record<string, unknown>;
   /** The LLM that calls the screen tools. Default `{ type: 'open_ai', model: 'gpt-4o-mini' }` (run by Deepgram). */
   think?: Record<string, unknown>;
-  /** The voice. Default `{ type: 'deepgram', model: 'aura-2-thalia-en' }`. */
+  /** The voice (Deepgram speak settings: `{ provider, endpoint? }`), overriding the language's default. */
   speak?: Record<string, unknown>;
-  /** e.g. 'en', 'hi'. Default: Deepgram's ('en'). */
-  language?: string;
 }
 
 /** `connect` returns your relay to wss://agent.deepgram.com/v1/agent/converse that adds `Authorization: Token <key>`. */
@@ -22,11 +28,54 @@ export type DeepgramAgentOptions = VoiceAgentOptions & DeepgramAgentSettings;
 
 const RATE = 24000;
 
+/** Languages Flux's multilingual model understands (Flux decides from the words when a turn is over). */
+const FLUX_MULTI = ['en', 'es', 'fr', 'de', 'hi', 'ru', 'pt', 'ja', 'it', 'nl'];
+/** Deepgram's own Aura-2 voices, by language. */
+const AURA_VOICES: Record<string, string> = { en: 'aura-2-thalia-en', es: 'aura-2-celeste-es' };
+
+const baseLanguage = (code: string) => code.toLowerCase().split(/[-_]/)[0];
+
+/** Speech recognition that fits `language`: Flux where it can, else Nova-3 in that language. */
+export function deepgramListen(language = 'en'): Record<string, unknown> {
+  const base = baseLanguage(language);
+  if (base === 'en') return { type: 'deepgram', version: 'v2', model: 'flux-general-en' };
+  if (FLUX_MULTI.includes(base)) return { type: 'deepgram', version: 'v2', model: 'flux-general-multi', language_hints: [base, 'en'] };
+  return { type: 'deepgram', model: 'nova-3', language: base };
+}
+
+export interface ElevenLabsVoiceOptions {
+  /** An ElevenLabs voice id. Default Jessica (cgSgspJ2msm6clMCkdW9), a premade voice every account has. */
+  voiceId?: string;
+  /**
+   * 'eleven_v3' (default): 70+ languages, including Kannada, Telugu, Malayalam, Bengali and Marathi,
+   * over HTTPS. 'eleven_turbo_v2_5' / 'eleven_multilingual_v2': faster (streamed), fewer languages
+   * (Hindi and Tamil among the Indian ones).
+   */
+  model?: 'eleven_v3' | 'eleven_turbo_v2_5' | 'eleven_multilingual_v2';
+  language?: string;
+  /** Usually left empty: your relay adds `xi-api-key`, so the key never ships in the app. */
+  headers?: Record<string, string>;
+}
+
+/** Deepgram speak settings that use an ElevenLabs voice (Deepgram calls ElevenLabs for the audio). */
+export function elevenLabsVoice({ voiceId = 'cgSgspJ2msm6clMCkdW9', model = 'eleven_v3', language, headers = {} }: ElevenLabsVoiceOptions = {}): Record<string, unknown> {
+  // v3 isn't available over ElevenLabs' streaming WebSocket.
+  const url = model === 'eleven_v3' ? `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}` : `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/multi-stream-input`;
+  return { provider: { type: 'eleven_labs', model_id: model, ...(language && { language }) }, endpoint: { url, headers } };
+}
+
+/** The voice that fits `language`: Aura-2 where Deepgram has one, else ElevenLabs v3. */
+export function deepgramSpeak(language = 'en'): Record<string, unknown> {
+  const base = baseLanguage(language);
+  return AURA_VOICES[base] ? { provider: { type: 'deepgram', model: AURA_VOICES[base] } } : elevenLabsVoice({ language: base });
+}
+
 /**
  * Deepgram's Voice Agent API: raw PCM both ways as binary frames, the screen tools as client-side
  * functions.
  */
 export function deepgramProtocol(settings: DeepgramAgentSettings = {}): VoiceAgentProtocol {
+  const language = (typeof settings.language === 'function' ? settings.language() : settings.language) || undefined;
   return {
     name: 'Deepgram',
     audioIn: { kind: 'binary' },
@@ -41,14 +90,14 @@ export function deepgramProtocol(settings: DeepgramAgentSettings = {}): VoiceAge
             output: { encoding: 'linear16', sample_rate: RATE, container: 'none' },
           },
           agent: {
-            ...(settings.language && { language: settings.language }),
-            listen: { provider: settings.listen ?? { type: 'deepgram', version: 'v2', model: 'flux-general-en' } },
+            // The language goes to the recognizer and voice (Deepgram rejects agent.language with Flux).
+            listen: { provider: settings.listen ?? deepgramListen(language) },
             think: {
               provider: settings.think ?? { type: 'open_ai', model: 'gpt-4o-mini' },
               prompt: `${instructions}\n\nCurrent screen:\n${screen}`,
               functions: tools.map(t => ({ name: t.name, description: t.description, parameters: t.schema })),
             },
-            speak: { provider: settings.speak ?? { type: 'deepgram', model: 'aura-2-thalia-en' } },
+            speak: settings.speak ?? deepgramSpeak(language),
             ...(greeting && { greeting }),
           },
         },
@@ -94,5 +143,6 @@ export function deepgramProtocol(settings: DeepgramAgentSettings = {}): VoiceAge
  * back as it is spoken.
  */
 export function deepgramAgentModel(opts: DeepgramAgentOptions): RealtimeVoiceModel {
-  return voiceAgentModel(deepgramProtocol(opts), opts);
+  // A fresh protocol per session, so a `language` getter follows the app's language.
+  return voiceAgentModel(() => deepgramProtocol(opts), opts);
 }

@@ -2,12 +2,13 @@
 //   POST /chat      -> forwards an OpenAI chat-completions body to the gateway
 //   WS   /realtime  -> relays to the gateway's /v1/realtime (speech-to-speech models)
 //   POST /openrouter/chat -> OpenRouter chat completions (same body as /chat)
-//   POST /speech    -> OpenRouter /audio/speech (hosted text-to-speech), streamed back
+//   POST /speech    -> hosted text-to-speech, streamed back as PCM: OpenRouter /audio/speech, or
+//                      Sarvam (Indian languages) for models named sarvam/<model>, e.g. sarvam/bulbul:v3
 //   GET  /elevenlabs/signed-url -> a one-off URL for a conversation with the ElevenLabs agent
 //   GET  /elevenlabs/scribe-url -> a one-off URL for live captions (Scribe realtime speech-to-text)
 //   WS   /deepgram/agent -> relays to Deepgram's Voice Agent (audio frames both ways), adding the key
 // Keys: GRID_API_KEY or ~/.config/grid/key; OPENROUTER_API_KEY or ~/.config/openrouter/key;
-// DEEPGRAM_API_KEY or ~/.config/deepgram/key;
+// DEEPGRAM_API_KEY or ~/.config/deepgram/key; SARVAM_API_KEY or ~/.config/sarvam/key;
 // ELEVENLABS_API_KEY or ~/.config/elevenlabs/key, with the agent from scripts/elevenlabs-agent.mjs
 // (ELEVENLABS_AGENT_ID or ~/.config/elevenlabs/agent_id).   Run: npm run server
 import { readFileSync } from 'node:fs';
@@ -30,6 +31,7 @@ const OPENROUTER_KEY = secret('OPENROUTER_API_KEY', 'openrouter/key');
 const ELEVENLABS_KEY = secret('ELEVENLABS_API_KEY', 'elevenlabs/key');
 const ELEVENLABS_AGENT = secret('ELEVENLABS_AGENT_ID', 'elevenlabs/agent_id');
 const DEEPGRAM_KEY = secret('DEEPGRAM_API_KEY', 'deepgram/key');
+const SARVAM_KEY = secret('SARVAM_API_KEY', 'sarvam/key');
 const auth = { Authorization: `Bearer ${KEY}` };
 const ts = () => new Date().toISOString().slice(11, 19);
 
@@ -96,14 +98,53 @@ async function elevenLabsScribeUrl(res) {
   json(res, 200, { url: `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params}` });
 }
 
+/** The PCM samples and rate in a WAV file. */
+function wavPcm(wav) {
+  let rate = 24000;
+  for (let i = 12; i + 8 <= wav.length; ) {
+    const id = wav.toString('ascii', i, i + 4);
+    const size = wav.readUInt32LE(i + 4);
+    if (id === 'fmt ') rate = wav.readUInt32LE(i + 12);
+    if (id === 'data') return { rate, pcm: wav.subarray(i + 8, i + 8 + size) };
+    i += 8 + size + (size % 2);
+  }
+  return { rate, pcm: Buffer.alloc(0) };
+}
+
+// Sarvam's Bulbul voices speak Indian languages (and Indian English); it returns WAV, sent on as PCM.
+async function sarvamSpeech(body, res, t0) {
+  if (!SARVAM_KEY) return json(res, 500, { error: { message: 'No Sarvam key' } });
+  const language = String(body.language || 'en-IN');
+  const upstream = await fetch('https://api.sarvam.ai/text-to-speech', {
+    method: 'POST',
+    headers: { 'api-subscription-key': SARVAM_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: body.input,
+      model: body.model.replace(/^sarvam\//, ''),
+      // Sarvam wants a region: 'kn' → 'kn-IN'.
+      target_language_code: language.includes('-') ? language : `${language}-IN`,
+      ...(body.voice && { speaker: body.voice }),
+    }),
+  });
+  const data = await upstream.json().catch(() => ({}));
+  if (!upstream.ok || !data.audios?.[0]) {
+    console.log(`${ts()} speech ${body.model} ${upstream.status} ${JSON.stringify(data).slice(0, 200)}`);
+    return json(res, upstream.ok ? 502 : upstream.status, { error: { message: data.error?.message ?? 'Sarvam returned no audio' } });
+  }
+  const { rate, pcm } = wavPcm(Buffer.from(data.audios[0], 'base64'));
+  res.writeHead(200, { 'Content-Type': `audio/pcm;rate=${rate};channels=1` }).end(pcm);
+  console.log(`${ts()} speech ${body.model} ${body.voice ?? ''} ${language} 200 ${Date.now() - t0}ms, ${Math.round(pcm.length / 1024)} KB  ${JSON.stringify(body.input?.slice(0, 60))}`);
+}
+
 // Streams the audio through as it arrives, so the app can start playing before it's all made.
 async function speech(req, res) {
-  if (!OPENROUTER_KEY) return json(res, 500, { error: { message: 'No OpenRouter key' } });
   let raw = '';
   for await (const chunk of req) raw += chunk;
   const t0 = Date.now();
   try {
     const body = JSON.parse(raw);
+    if (String(body.model).startsWith('sarvam/')) return await sarvamSpeech(body, res, t0);
+    if (!OPENROUTER_KEY) return json(res, 500, { error: { message: 'No OpenRouter key' } });
     const upstream = await fetch('https://openrouter.ai/api/v1/audio/speech', {
       method: 'POST',
       headers: { Authorization: `Bearer ${OPENROUTER_KEY}`, 'Content-Type': 'application/json' },
@@ -173,8 +214,15 @@ function relayDeepgram(req, socket, head) {
       if (!isBinary) {
         try {
           const m = JSON.parse(data.toString());
-          if (m.type === 'Settings') console.log(`${ts()} deepgram Settings: prompt ${m.agent?.think?.prompt?.length ?? 0} chars, ${m.agent?.think?.functions?.length ?? 0} functions, think ${JSON.stringify(m.agent?.think?.provider)}`);
-          else if (m.type !== 'KeepAlive') console.log(`${ts()} deepgram ← ${data.toString().slice(0, 160)}`);
+          if (m.type === 'Settings') {
+            // A voice from ElevenLabs (other languages): Deepgram calls it with our ElevenLabs key.
+            const speak = [m.agent?.speak].flat().filter(Boolean);
+            for (const s of speak) if (/elevenlabs\.io/.test(s.endpoint?.url ?? '') && ELEVENLABS_KEY) s.endpoint.headers = { ...s.endpoint.headers, 'xi-api-key': ELEVENLABS_KEY };
+            data = Buffer.from(JSON.stringify(m));
+            console.log(
+              `${ts()} deepgram Settings: language ${m.agent?.language ?? 'default'}, listen ${JSON.stringify(m.agent?.listen?.provider)}, speak ${speak.map(s => s.provider?.model_id ?? s.provider?.model).join('+')}, prompt ${m.agent?.think?.prompt?.length ?? 0} chars, ${m.agent?.think?.functions?.length ?? 0} functions`,
+            );
+          } else if (m.type !== 'KeepAlive') console.log(`${ts()} deepgram ← ${data.toString().slice(0, 160)}`);
         } catch {}
       }
       upstream.readyState === WebSocket.OPEN ? forward(upstream, data, isBinary) : pending.push([data, isBinary]);

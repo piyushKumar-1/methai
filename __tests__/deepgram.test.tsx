@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Text, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { base64ToBytes, deepgramAgentModel, floatToPcm16Base64, ScreenContextProvider, voiceAgentModel, type PcmAudioIO, type VoiceAgentProtocol } from '../src';
+import { base64ToBytes, deepgramAgentModel, deepgramProtocol, floatToPcm16Base64, ScreenContextProvider, voiceAgentModel, type PcmAudioIO, type VoiceAgentProtocol } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -202,4 +202,27 @@ test('any provider is just a protocol: a made-up one works with no engine code',
   expect(log).toContain(`play:${pcm}`);
   expect(assistant.getStatus().log.map(m => m.text)).toEqual(['add a banana', 'Done.']);
   await act(async () => r.unmount());
+});
+
+test('languages: the recognizer and voice follow the language', () => {
+  const settings = (language?: string) => deepgramProtocol({ language }).open.messages({ greeting: 'Hi', instructions: '', screen: '', tools: [] })[0] as any;
+  // English: Flux and an Aura-2 voice.
+  expect(settings(undefined).agent.listen.provider).toEqual({ type: 'deepgram', version: 'v2', model: 'flux-general-en' });
+  expect(settings('en-IN').agent.speak).toEqual({ provider: { type: 'deepgram', model: 'aura-2-thalia-en' } });
+  // Hindi: Flux multilingual, hinted with English too (people mix them); an ElevenLabs v3 voice.
+  const hi = settings('hi-IN').agent;
+  expect(hi.language).toBeUndefined();
+  expect(hi.listen.provider).toEqual({ type: 'deepgram', version: 'v2', model: 'flux-general-multi', language_hints: ['hi', 'en'] });
+  expect(hi.speak).toEqual({
+    provider: { type: 'eleven_labs', model_id: 'eleven_v3', language: 'hi' },
+    endpoint: { url: 'https://api.elevenlabs.io/v1/text-to-speech/cgSgspJ2msm6clMCkdW9', headers: {} },
+  });
+  // Kannada: Nova-3 in Kannada.
+  expect(settings('kn').agent.listen.provider).toEqual({ type: 'deepgram', model: 'nova-3', language: 'kn' });
+  // A getter is read per session.
+  let lang = 'ta';
+  const protocol = () => deepgramProtocol({ language: () => lang }).open.messages({ greeting: '', instructions: '', screen: '', tools: [] })[0] as any;
+  expect(protocol().agent.listen.provider.language).toBe('ta');
+  lang = 'en';
+  expect(protocol().agent.listen.provider.model).toBe('flux-general-en');
 });

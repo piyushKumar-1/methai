@@ -11,6 +11,11 @@ export interface HostedSpeechOptions {
   /** e.g. 'elevenlabs/eleven-flash-v2.5'. A getter lets a settings screen switch it. */
   model: string | (() => string);
   voice?: string | (() => string | undefined);
+  /**
+   * The language to speak (BCP-47, e.g. 'kn-IN'), sent as `language` for endpoints that take one
+   * (Indian-language voices such as Sarvam's, through your relay). A getter follows the app's language.
+   */
+  language?: string | (() => string | undefined);
   headers?: Record<string, string>;
   /** Plays the audio (24 kHz PCM16), e.g. the PcmAudioIO used for realtime voice. Closed after each answer. */
   audio: PcmAudioIO;
@@ -62,7 +67,7 @@ export function withHostedSpeech(voice: VoiceIO, opts: HostedSpeechOptions): Voi
       res = await doFetch(opts.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...opts.headers },
-        body: JSON.stringify({ model: value(opts.model), input: say, voice: value(opts.voice), response_format: 'pcm' }),
+        body: JSON.stringify({ model: value(opts.model), input: say, voice: value(opts.voice), response_format: 'pcm', ...(opts.language && { language: value(opts.language) }) }),
         signal,
       });
       if (!res.ok) throw new Error(`Speech request failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);

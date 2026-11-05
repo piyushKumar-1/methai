@@ -21,8 +21,8 @@ export type { OpenAIRealtimeOptions, OpenAIRealtimeSettings, PcmAudioIO, Realtim
 export { voiceAgentModel } from './voiceAgent';
 export type { VoiceAgentEvent, VoiceAgentOptions, VoiceAgentProtocol, VoiceAgentSetup, VoiceAgentToolCall } from './voiceAgent';
 export { elevenLabsAgentModel, elevenLabsClientTools, elevenLabsProtocol } from './elevenlabs';
-export { deepgramAgentModel, deepgramProtocol } from './deepgram';
-export type { DeepgramAgentOptions, DeepgramAgentSettings } from './deepgram';
+export { deepgramAgentModel, deepgramListen, deepgramProtocol, deepgramSpeak, elevenLabsVoice } from './deepgram';
+export type { DeepgramAgentOptions, DeepgramAgentSettings, ElevenLabsVoiceOptions } from './deepgram';
 export { withHostedSpeech } from './hostedSpeech';
 export type { HostedSpeechOptions } from './hostedSpeech';
 export type { ElevenLabsAgentOptions, ElevenLabsAgentSettings } from './elevenlabs';
