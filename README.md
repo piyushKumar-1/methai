@@ -475,6 +475,40 @@ const realtime = deepgramAgentModel({
 });
 ```
 
+### Any voice-agent API: one transport, a protocol per provider
+
+Streaming voice-agent APIs all work the same way: the mic streams up and the agent's voice streams
+down over a WebSocket, the agent calls tools that run in the app, and the server reports
+transcripts and turns. Only the message shapes differ, so there is one transport,
+`voiceAgentModel(protocol, options)`, and each provider is a `VoiceAgentProtocol`: what to send on
+connect, how mic audio goes up (binary frames or base64 in JSON), what each server message means
+(agent audio, agent text, user words, user started talking, tool calls, reply done, errors), and
+how to answer (tool results, typed text, context notes, what to send when the agent is cut off,
+keep-alives). The engine does the rest for all of them: mic and echo-aware barge-in, playback,
+dropping a cut-off reply, the tool queue, sample-rate conversion, errors and close.
+
+Built in: `deepgramProtocol`, `elevenLabsProtocol`, `openAIRealtimeProtocol` (and the
+`deepgramAgentModel`, `elevenLabsAgentModel`, `openAIRealtimeModel` shortcuts). A new provider:
+
+```ts
+const acme: VoiceAgentProtocol = {
+  name: 'Acme',
+  audioIn: { kind: 'json', message: pcm => ({ kind: 'mic', pcm }) },  // or { kind: 'binary' }
+  open: { messages: ({ greeting, instructions, screen, tools }) => [{ kind: 'start', prompt: `${instructions}\n${screen}`, greeting,
+    tools: tools.map(t => ({ name: t.name, description: t.description, parameters: t.schema })) }] },
+  parse: m =>
+    m.kind === 'voice' ? [{ type: 'audio', base64: m.pcm }]
+    : m.kind === 'voice-end' ? [{ type: 'reply-done' }]
+    : m.kind === 'heard' ? [{ type: 'user-text', text: m.text, final: true }]
+    : m.kind === 'barge-in' ? [{ type: 'user-speaking' }]
+    : m.kind === 'do' ? [{ type: 'tool-calls', calls: [{ id: m.id, name: m.tool, args: m.args }] }]
+    : [],
+  toolResult: (call, result) => [{ kind: 'done', id: call.id, output: result.content }],
+  // Optional: userText, context, interrupted, afterToolResults, keepAlive, replyGapMs, endTool, inputRate/outputRate.
+};
+const realtime = voiceAgentModel(acme, { connect: async () => ({ url: 'wss://your-relay/acme' }), audio: devicePcmAudio() });
+```
+
 ## Voice-reactive glow
 
 While a session runs, an aura of colours flows along the bottom of the screen. It reacts to the

@@ -268,7 +268,10 @@ test('ElevenLabs agent session: the mic sends silence while the agent talks, so 
   await wait(0);
   const ws = FakeWS.last;
   const short = floatToPcm16Base64(new Float32Array(240)); // 10 ms
-  await act(async () => ws.server({ type: 'audio', audio_event: { audio_base_64: short, event_id: 1 } }));
+  await act(async () => {
+    ws.server({ type: 'conversation_initiation_metadata', conversation_initiation_metadata_event: { user_input_audio_format: 'pcm_24000', agent_output_audio_format: 'pcm_24000' } });
+    ws.server({ type: 'audio', audio_event: { audio_base_64: short, event_id: 1 } });
+  });
   await wait(450); // greeting over: listening
   const voice = floatToPcm16Base64(new Float32Array(2400).fill(0.2));
   mic(voice);
@@ -310,7 +313,10 @@ test('ElevenLabs agent session: talking over the agent cuts it off; its own echo
   await act(async () => void assistant.start());
   await wait(0);
   const [agent] = sockets;
-  await act(async () => agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 1 } }));
+  await act(async () => {
+    agent.server({ type: 'conversation_initiation_metadata', conversation_initiation_metadata_event: { user_input_audio_format: 'pcm_24000', agent_output_audio_format: 'pcm_24000' } });
+    agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 1 } });
+  });
   await wait(450);
   const scribe = sockets[1];
 

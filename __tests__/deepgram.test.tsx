@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Text, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { base64ToBytes, deepgramAgentModel, floatToPcm16Base64, ScreenContextProvider, type PcmAudioIO } from '../src';
+import { base64ToBytes, deepgramAgentModel, floatToPcm16Base64, ScreenContextProvider, voiceAgentModel, type PcmAudioIO, type VoiceAgentProtocol } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -139,5 +139,67 @@ test('Deepgram agent: settings with the screen and tools, audio both ways as bin
   });
   expect(assistant.getStatus().state).toBe('idle');
   expect(assistant.getStatus().log.map(m => m.text)).toEqual(['Hi there', 'add a banana', 'and one more', 'Added a banana.']);
+  await act(async () => r.unmount());
+});
+
+test('any provider is just a protocol: a made-up one works with no engine code', async () => {
+  const { audio, log, mic } = fakeAudio();
+  // "Acme" speaks JSON both ways: { kind: 'hello' } on connect, audio as { pcm }, its own event names.
+  const acme: VoiceAgentProtocol = {
+    name: 'Acme',
+    audioIn: { kind: 'json', message: pcm => ({ kind: 'mic', pcm }) },
+    open: { messages: setup => [{ kind: 'start', prompt: setup.instructions, hello: setup.greeting, tools: setup.tools.map(t => t.name) }] },
+    parse: m =>
+      m.kind === 'voice' ? [{ type: 'audio', base64: m.pcm }]
+      : m.kind === 'said' ? [{ type: 'agent-text', text: m.text }]
+      : m.kind === 'voice-end' ? [{ type: 'reply-done' }]
+      : m.kind === 'heard' ? [{ type: 'user-text', text: m.text, final: true }]
+      : m.kind === 'do' ? [{ type: 'tool-calls', calls: [{ id: m.id, name: m.tool, args: m.args }] }]
+      : [],
+    toolResult: (call, result) => [{ kind: 'done', id: call.id, output: result.content }],
+  };
+  const realtime = voiceAgentModel(acme, { connect: async () => ({ url: 'wss://acme/voice' }), audio, WebSocketImpl: FakeWS });
+  let r!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    r = TestRenderer.create(
+      <ScreenContextProvider assistant={{ greeting: 'Hello', realtime, idleTimeoutMs: 50 }}>
+        <Shop />
+      </ScreenContextProvider>,
+    );
+  });
+  const assistant = (r.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).assistant!;
+  let run!: Promise<void>;
+  await act(async () => {
+    run = assistant.start();
+  });
+  await wait(5);
+  const ws = FakeWS.last;
+  expect(ws.json[0]).toMatchObject({ kind: 'start', hello: 'Hello', tools: expect.arrayContaining(['press_element']) });
+  const pcm = floatToPcm16Base64(new Float32Array(240));
+  await act(async () => {
+    ws.server({ kind: 'voice', pcm });
+    ws.server({ kind: 'voice-end' });
+  });
+  await wait(350);
+  const voice = floatToPcm16Base64(new Float32Array(2400).fill(0.1));
+  mic(voice);
+  expect(ws.json.at(-1)).toEqual({ kind: 'mic', pcm: voice });
+  await act(async () => {
+    ws.server({ kind: 'heard', text: 'add a banana' });
+    ws.server({ kind: 'do', id: 'x1', tool: 'press_element', args: { element_id: 'btn_add_banana' } });
+  });
+  await wait(900);
+  expect(ws.json.find(m => m.kind === 'done')).toMatchObject({ id: 'x1', output: expect.stringMatching(/^OK: press on btn_add_banana/) });
+  await act(async () => {
+    ws.server({ kind: 'voice', pcm });
+    ws.server({ kind: 'said', text: 'Done.' });
+    ws.server({ kind: 'voice-end' });
+  });
+  await act(async () => {
+    await new Promise(res => setTimeout(res, 500));
+    await run;
+  });
+  expect(log).toContain(`play:${pcm}`);
+  expect(assistant.getStatus().log.map(m => m.text)).toEqual(['add a banana', 'Done.']);
   await act(async () => r.unmount());
 });

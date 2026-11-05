@@ -1,35 +1,22 @@
 import { SCREEN_TOOLS, type JSONSchemaObject } from './llm';
-import { floatToPcm16Base64, pcm16Base64ToFloat, resample } from './pcm';
-import type { PcmAudioIO, RealtimeConnection } from './realtime';
 import type { RealtimeVoiceModel } from './session';
-import { voiceAudio, type VoiceInterruptions } from './voiceAudio';
+import { voiceAgentModel, type VoiceAgentOptions, type VoiceAgentProtocol } from './voiceAgent';
 
-export interface ElevenLabsAgentOptions {
-  /**
-   * Called per session. Return the agent's signed URL, fetched by your backend from
-   * GET /v1/convai/conversation/get-signed-url?agent_id=… (keeps the API key off the device).
-   */
-  connect: () => Promise<RealtimeConnection>;
-  audio: PcmAudioIO;
-  /**
-   * Live captions of what the user is saying. ElevenLabs agents only send the user's words once
-   * their turn is over, so for words on screen while they talk, the same mic audio also streams to
-   * Scribe realtime speech-to-text. Return its URL with a single-use token, fetched by your backend
-   * from POST /v1/single-use-token/realtime_scribe:
-   * wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&audio_format=pcm_24000&commit_strategy=vad&token=…
-   */
-  liveTranscript?: () => Promise<RealtimeConnection>;
-  /** Overrides the assistant's `voiceInterruptions` for this transport. */
-  voiceInterruptions?: VoiceInterruptions;
+export interface ElevenLabsAgentSettings {
   /** Override the agent's voice for this app. */
   voiceId?: string;
   /** Language code for speech recognition and the voice, e.g. 'en', 'hi'. Default: the agent's. */
   language?: string;
-  /** For tests / non-RN runtimes. Defaults to the global WebSocket. */
-  WebSocketImpl?: any;
 }
 
-const RATE = 24000; // PcmAudioIO's rate
+/**
+ * `connect` returns the agent's signed URL, fetched by your backend from
+ * GET /v1/convai/conversation/get-signed-url?agent_id=… (keeps the API key off the device).
+ * For live captions while the user talks (agents only send the words once the turn is over), pass
+ * `liveTranscript`: a Scribe realtime URL with a single-use token from POST /v1/single-use-token/realtime_scribe.
+ */
+export type ElevenLabsAgentOptions = VoiceAgentOptions & ElevenLabsAgentSettings;
+
 /** Audio this long without a new chunk means the agent has finished the current answer. */
 const ANSWER_GAP_MS = 400;
 
@@ -69,221 +56,97 @@ const rateOf = (format: unknown) => {
   const m = /^pcm_(\d+)$/.exec(String(format ?? ''));
   return m ? Number(m[1]) : undefined;
 };
-const convert = (chunk: string, from: number, to: number) =>
-  from === to ? chunk : floatToPcm16Base64(resample(pcm16Base64ToFloat(chunk), from, to));
 
 /**
- * A conversation with an ElevenLabs agent (Agents Platform WebSocket). ElevenLabs does the speech
- * recognition, turn-taking and voice; the agent's LLM calls the screen tools, which run here. The
- * app's prompt and live screen replace the agent's prompt for each session (the agent must allow
- * prompt overrides), and its greeting fills the agent's first message, "{{greeting}}".
- * scripts/elevenlabs-agent.mjs sets an agent up this way. This is only the protocol: timeouts,
- * stop phrases, confirmations and captions are the assistant's (see RealtimeSession).
+ * ElevenLabs Agents Platform WebSocket: base64 PCM in JSON both ways, the screen tools as client
+ * tools. The app's prompt and live screen replace the agent's prompt per session (the agent must
+ * allow prompt overrides), and its greeting fills the agent's first message, "{{greeting}}".
+ * scripts/elevenlabs-agent.mjs sets an agent up this way.
+ */
+export function elevenLabsProtocol(settings: ElevenLabsAgentSettings = {}): VoiceAgentProtocol {
+  return {
+    name: 'ElevenLabs',
+    audioIn: { kind: 'json', message: audio => ({ user_audio_chunk: audio }) },
+    open: {
+      waitForReady: true,
+      messages: ({ greeting, instructions, screen }) => [
+        {
+          type: 'conversation_initiation_client_data',
+          conversation_config_override: {
+            agent: {
+              prompt: { prompt: `${instructions}\n\nCurrent screen:\n${screen}` },
+              ...(settings.language && { language: settings.language }),
+            },
+            ...(settings.voiceId && { tts: { voice_id: settings.voiceId } }),
+          },
+          // The agent's first message is "{{greeting}}".
+          dynamic_variables: { greeting },
+        },
+      ],
+    },
+    parse: msg => {
+      switch (msg.type) {
+        case 'conversation_initiation_metadata': {
+          const meta = msg.conversation_initiation_metadata_event ?? {};
+          const inputRate = rateOf(meta.user_input_audio_format);
+          const outputRate = rateOf(meta.agent_output_audio_format);
+          if ((meta.user_input_audio_format && !inputRate) || (meta.agent_output_audio_format && !outputRate))
+            return [{ type: 'error', message: `the agent uses ${meta.user_input_audio_format}/${meta.agent_output_audio_format}; set both to pcm_24000` }];
+          return [{ type: 'audio-format', inputRate, outputRate }, { type: 'ready' }];
+        }
+        case 'audio':
+          return msg.audio_event?.audio_base_64 ? [{ type: 'audio', base64: msg.audio_event.audio_base_64 }] : [];
+        case 'agent_chat_response_part':
+          // The reply as it's written, ahead of its audio: lets its echo be recognised from the start.
+          return msg.text_response_part?.type === 'delta' && msg.text_response_part.text
+            ? [{ type: 'agent-text', text: msg.text_response_part.text, partial: true }]
+            : [];
+        case 'agent_response': {
+          const text = String(msg.agent_response_event?.agent_response ?? '').trim();
+          return text ? [{ type: 'agent-text', text }] : [];
+        }
+        case 'interruption':
+          return [{ type: 'user-speaking' }];
+        case 'vad_score':
+          return (msg.vad_score_event?.vad_score ?? 0) > 0.6 ? [{ type: 'user-speaking' }] : [];
+        case 'user_transcript': {
+          const text = String(msg.user_transcription_event?.user_transcript ?? '').trim();
+          return text ? [{ type: 'user-text', text, final: true }] : [];
+        }
+        case 'client_tool_call': {
+          const call = msg.client_tool_call;
+          if (!call) return [];
+          const args = { ...call.parameters };
+          // A free-form object can't be described to ElevenLabs: run_screen_action takes its args as JSON text.
+          if (call.tool_name === 'run_screen_action' && typeof args.args === 'string') {
+            try {
+              args.args = JSON.parse(args.args);
+            } catch {
+              args.args = {};
+            }
+          }
+          return [{ type: 'tool-calls', calls: [{ id: call.tool_call_id, name: call.tool_name, args }] }];
+        }
+        case 'ping':
+          return [{ type: 'send', messages: [{ type: 'pong', event_id: msg.ping_event?.event_id }] }];
+        case 'client_error':
+          return [{ type: 'error', message: msg.error_event?.message || 'error' }];
+        default:
+          return [];
+      }
+    },
+    toolResult: (call, result) => [{ type: 'client_tool_result', tool_call_id: call.id, result: result.content, is_error: result.isError }],
+    userText: text => [{ type: 'user_message', text }],
+    context: text => [{ type: 'contextual_update', text }],
+    // No "reply done" message: a pause in its audio ends the reply.
+    replyGapMs: ANSWER_GAP_MS,
+  };
+}
+
+/**
+ * A conversation with an ElevenLabs agent. ElevenLabs does the speech recognition, turn-taking and
+ * voice; the agent's LLM calls the screen tools, which run here.
  */
 export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoiceModel {
-  return {
-    async run(session) {
-      const { greeting, screen, instructions, signal } = session;
-      const conn = await opts.connect();
-      const WS = opts.WebSocketImpl ?? (globalThis as any).WebSocket;
-      const ws = new WS(conn.url, conn.protocols ?? [], conn.headers ? { headers: conn.headers } : undefined);
-      const mic = voiceAudio(opts.audio, {
-        voiceInterruptions: opts.voiceInterruptions ?? session.voiceInterruptions,
-        liveTranscript: opts.liveTranscript,
-        WebSocketImpl: opts.WebSocketImpl,
-        // The agent sends the final transcript; captions only show the words as they come.
-        onCaption: text => session.emit({ type: 'user-text', text, final: false }),
-        onMicLevel: level => session.emit({ type: 'mic-level', level }),
-        onSpeech: () => session.emit({ type: 'user-speaking' }),
-        // The user talked over the agent: drop the rest of its reply. Their voice now reaches
-        // ElevenLabs, which ends the agent's turn itself.
-        onBargeIn: () => cutOff?.(),
-      });
-      let cutOff: (() => void) | undefined;
-
-      await new Promise<void>((resolve, reject) => {
-        let inRate = RATE;
-        let outRate = RATE;
-        let userSpoke = false;
-        let tools = 0; // tool calls running
-        let muted = false; // the user tapped to cut the answer: drop the rest of its audio
-        let answerTimer: ReturnType<typeof setTimeout> | undefined;
-        let toolQueue = Promise.resolve();
-        let settled = false;
-
-        const send = (event: object) => ws.readyState === 1 && ws.send(JSON.stringify(event));
-
-        const finish = async (error?: Error) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(answerTimer);
-          signal.removeEventListener('abort', onAbort);
-          await mic.close(!!error || signal.aborted);
-          try {
-            ws.close();
-          } catch {}
-          error ? reject(error) : resolve();
-        };
-        const onAbort = () => void finish();
-        signal.addEventListener('abort', onAbort, { once: true });
-
-        // The mic opens once the greeting has played, so it doesn't start by hearing it.
-        const openMic = () => void mic.startMic(chunk => send({ user_audio_chunk: convert(chunk, RATE, inRate) })).catch(e => finish(e));
-
-        /** The agent stopped sending audio: once it has played, it's the user's turn. */
-        const answered = () => {
-          if (tools > 0) return; // still acting: more speech follows the tool results
-          void mic
-            .drained()
-            .then(() => {
-              if (settled || tools > 0) return;
-              openMic();
-              session.emit({ type: 'agent-done' });
-            })
-            .catch(e => finish(e));
-        };
-
-        const runTool = (call: { tool_call_id: string; tool_name: string; parameters?: Record<string, any>; expects_response?: boolean }) => {
-          tools++;
-          clearTimeout(answerTimer);
-          toolQueue = toolQueue.then(async () => {
-            const input = { ...call.parameters };
-            if (call.tool_name === 'run_screen_action' && typeof input.args === 'string') {
-              try {
-                input.args = JSON.parse(input.args);
-              } catch {
-                input.args = {};
-              }
-            }
-            let result: { content: string; isError: boolean };
-            try {
-              result = await session.runTool(call.tool_name, input);
-            } catch (e) {
-              result = { content: String(e), isError: true };
-            }
-            tools--;
-            if (call.expects_response !== false) send({ type: 'client_tool_result', tool_call_id: call.tool_call_id, result: result.content, is_error: result.isError });
-          });
-        };
-
-        // The app heard the user cut in: ElevenLabs is still sending the old reply until it notices.
-        cutOff = () => {
-          if (muted) return;
-          muted = true;
-          clearTimeout(answerTimer);
-          session.emit({ type: 'interrupted' });
-          session.emit({ type: 'user-speaking' });
-        };
-
-        session.handle({
-          // There is no "cancel" message: stop playing, and ignore the rest of this answer.
-          interrupt: () => {
-            mic.flush();
-            muted = true;
-            clearTimeout(answerTimer);
-            session.emit({ type: 'interrupted' });
-            answered();
-          },
-          context: text => send({ type: 'contextual_update', text }),
-          text: text => send({ type: 'user_message', text }),
-        });
-
-        ws.onopen = () => {
-          send({
-            type: 'conversation_initiation_client_data',
-            conversation_config_override: {
-              agent: {
-                prompt: { prompt: `${instructions}\n\nCurrent screen:\n${screen}` },
-                ...(opts.language && { language: opts.language }),
-              },
-              ...(opts.voiceId && { tts: { voice_id: opts.voiceId } }),
-            },
-            // The agent's first message is "{{greeting}}".
-            dynamic_variables: { greeting },
-          });
-        };
-
-        ws.onerror = (e: any) => void finish(new Error(`ElevenLabs connection error${e?.message ? `: ${e.message}` : ''}`));
-        ws.onclose = (e: any) => {
-          // The agent hangs up (end_call) by closing the socket; let the goodbye finish playing.
-          if (settled) return;
-          if (userSpoke) void finish();
-          else void finish(new Error(`ElevenLabs connection closed (${e?.code ?? '?'}) ${e?.reason ?? ''}`.trim()));
-        };
-
-        ws.onmessage = (msg: { data: string }) => {
-          let event: any;
-          try {
-            event = JSON.parse(msg.data);
-          } catch {
-            return;
-          }
-          switch (event.type) {
-            case 'conversation_initiation_metadata': {
-              const meta = event.conversation_initiation_metadata_event ?? {};
-              const input = rateOf(meta.user_input_audio_format);
-              const output = rateOf(meta.agent_output_audio_format);
-              if ((meta.user_input_audio_format && !input) || (meta.agent_output_audio_format && !output))
-                return void finish(new Error(`ElevenLabs agent uses ${meta.user_input_audio_format}/${meta.agent_output_audio_format}; set both to pcm_24000`));
-              inRate = input ?? RATE;
-              outRate = output ?? RATE;
-              // No greeting configured: the agent waits for the user.
-              if (!greeting) answered();
-              break;
-            }
-            case 'audio': {
-              const chunk = event.audio_event?.audio_base_64;
-              if (!chunk || muted) break;
-              session.emit({ type: 'agent-audio', level: mic.play(convert(chunk, outRate, RATE)) });
-              clearTimeout(answerTimer);
-              answerTimer = setTimeout(answered, ANSWER_GAP_MS);
-              break;
-            }
-            case 'agent_chat_response_part': {
-              // The reply as it's written, ahead of its audio: lets its echo be recognised from the start.
-              const part = event.text_response_part;
-              if (part?.type === 'delta' && part.text) mic.agentSays(part.text);
-              break;
-            }
-            case 'agent_response': {
-              const text = String(event.agent_response_event?.agent_response ?? '').trim();
-              if (!text) break;
-              mic.agentSays(text);
-              session.emit({ type: 'agent-text', text });
-              break;
-            }
-            case 'interruption':
-              // ElevenLabs heard the user talk over the agent and stopped its reply (if the app cut
-              // in first, this confirms it: the next audio is a new reply).
-              mic.flush();
-              clearTimeout(answerTimer);
-              if (!muted) session.emit({ type: 'interrupted' });
-              muted = false;
-              session.emit({ type: 'user-speaking' });
-              break;
-            case 'vad_score':
-              if ((event.vad_score_event?.vad_score ?? 0) > 0.6 && !mic.speaking()) session.emit({ type: 'user-speaking' });
-              break;
-            case 'user_transcript': {
-              const text = String(event.user_transcription_event?.user_transcript ?? '').trim();
-              if (!text) break;
-              userSpoke = true;
-              muted = false;
-              session.emit({ type: 'user-text', text, final: true });
-              break;
-            }
-            case 'client_tool_call':
-              if (event.client_tool_call) runTool(event.client_tool_call);
-              break;
-            case 'ping':
-              send({ type: 'pong', event_id: event.ping_event?.event_id });
-              break;
-            case 'client_error':
-              void finish(new Error(event.error_event?.message || 'ElevenLabs error'));
-              break;
-          }
-        };
-      });
-    },
-  };
+  return voiceAgentModel(elevenLabsProtocol(opts), opts);
 }
