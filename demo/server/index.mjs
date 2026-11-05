@@ -5,7 +5,9 @@
 //   POST /speech    -> OpenRouter /audio/speech (hosted text-to-speech), streamed back
 //   GET  /elevenlabs/signed-url -> a one-off URL for a conversation with the ElevenLabs agent
 //   GET  /elevenlabs/scribe-url -> a one-off URL for live captions (Scribe realtime speech-to-text)
+//   WS   /deepgram/agent -> relays to Deepgram's Voice Agent (audio frames both ways), adding the key
 // Keys: GRID_API_KEY or ~/.config/grid/key; OPENROUTER_API_KEY or ~/.config/openrouter/key;
+// DEEPGRAM_API_KEY or ~/.config/deepgram/key;
 // ELEVENLABS_API_KEY or ~/.config/elevenlabs/key, with the agent from scripts/elevenlabs-agent.mjs
 // (ELEVENLABS_AGENT_ID or ~/.config/elevenlabs/agent_id).   Run: npm run server
 import { readFileSync } from 'node:fs';
@@ -27,6 +29,7 @@ const KEY = secret('GRID_API_KEY', 'grid/key');
 const OPENROUTER_KEY = secret('OPENROUTER_API_KEY', 'openrouter/key');
 const ELEVENLABS_KEY = secret('ELEVENLABS_API_KEY', 'elevenlabs/key');
 const ELEVENLABS_AGENT = secret('ELEVENLABS_AGENT_ID', 'elevenlabs/agent_id');
+const DEEPGRAM_KEY = secret('DEEPGRAM_API_KEY', 'deepgram/key');
 const auth = { Authorization: `Bearer ${KEY}` };
 const ts = () => new Date().toISOString().slice(11, 19);
 
@@ -126,6 +129,7 @@ async function speech(req, res) {
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/deepgram/agent') return relayDeepgram(req, socket, head);
   if (url.pathname !== '/realtime') return socket.destroy();
   wss.handleUpgrade(req, socket, head, client => {
     const model = url.searchParams.get('model') ?? 'xor-latest-custom';
@@ -152,6 +156,40 @@ server.on('upgrade', (req, socket, head) => {
     upstream.on('close', close);
   });
 });
+
+// Deepgram's Voice Agent: JSON messages and raw PCM audio frames, passed through as they are.
+function relayDeepgram(req, socket, head) {
+  if (!DEEPGRAM_KEY) return socket.destroy();
+  wss.handleUpgrade(req, socket, head, client => {
+    console.log(`${ts()} deepgram agent connect`);
+    const upstream = new WebSocket('wss://agent.deepgram.com/v1/agent/converse', { headers: { Authorization: `Token ${DEEPGRAM_KEY}` } });
+    const pending = [];
+    const close = () => {
+      client.close();
+      upstream.close();
+    };
+    const forward = (to, data, isBinary) => to.readyState === WebSocket.OPEN && to.send(data, { binary: isBinary });
+    client.on('message', (data, isBinary) => (upstream.readyState === WebSocket.OPEN ? forward(upstream, data, isBinary) : pending.push([data, isBinary])));
+    upstream.on('open', () => pending.splice(0).forEach(([data, isBinary]) => forward(upstream, data, isBinary)));
+    upstream.on('message', (data, isBinary) => {
+      if (!isBinary) {
+        const type = /"type":"(\w+)"/.exec(data.toString())?.[1];
+        if (type && !['History', 'LatencyReport'].includes(type)) console.log(`${ts()} deepgram ${type} ${data.toString().slice(0, 160)}`);
+      }
+      forward(client, data, isBinary);
+    });
+    upstream.on('unexpected-response', (_q, r) => {
+      console.error(`${ts()} deepgram upstream rejected: HTTP ${r.statusCode}`);
+      close();
+    });
+    upstream.on('error', e => {
+      console.error(`${ts()} deepgram upstream error`, e.message);
+      close();
+    });
+    client.on('close', close);
+    upstream.on('close', close);
+  });
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   const ips = Object.values(networkInterfaces()).flat().filter(i => i?.family === 'IPv4' && !i.internal).map(i => i.address);

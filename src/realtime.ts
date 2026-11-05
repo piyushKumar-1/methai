@@ -192,6 +192,10 @@ export function openAIRealtimeModel(opts: OpenAIRealtimeOptions): RealtimeVoiceM
             answered();
           },
           context: text => send({ type: 'conversation.item.create', item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } }),
+          text: text => {
+            send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+            send({ type: 'response.create' });
+          },
         });
 
         ws.onopen = () => {

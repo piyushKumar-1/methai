@@ -185,6 +185,7 @@ export function elevenLabsAgentModel(opts: ElevenLabsAgentOptions): RealtimeVoic
             answered();
           },
           context: text => send({ type: 'contextual_update', text }),
+          text: text => send({ type: 'user_message', text }),
         });
 
         ws.onopen = () => {

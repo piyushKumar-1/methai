@@ -19,10 +19,12 @@ export type { VoiceAudio, VoiceAudioOptions, VoiceInterruptions } from './voiceA
 export { openAIRealtimeModel } from './realtime';
 export type { OpenAIRealtimeOptions, PcmAudioIO, RealtimeConnection } from './realtime';
 export { elevenLabsAgentModel, elevenLabsClientTools } from './elevenlabs';
+export { deepgramAgentModel } from './deepgram';
+export type { DeepgramAgentOptions } from './deepgram';
 export { withHostedSpeech } from './hostedSpeech';
 export type { HostedSpeechOptions } from './hostedSpeech';
 export type { ElevenLabsAgentOptions } from './elevenlabs';
-export { floatToPcm16Base64, pcm16Base64ToFloat, pcmLevel, resample } from './pcm';
+export { base64ToBytes, bytesToBase64, floatToPcm16Base64, pcm16Base64ToFloat, pcmLevel, resample } from './pcm';
 export { AgentGlow } from './AgentGlow';
 export type { AgentGlowProps } from './AgentGlow';
 export { AssistantButton } from './AssistantButton';

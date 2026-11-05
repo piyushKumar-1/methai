@@ -7,6 +7,7 @@ import {
   AIAction,
   AIIgnore,
   AssistantButton,
+  deepgramAgentModel,
   elevenLabsAgentModel,
   openAIChatModel,
   openAIRealtimeModel,
@@ -22,7 +23,7 @@ import { devicePcmAudio } from './src/pcm-audio';
 import { deviceVoice, rankedVoices, type RankedVoice } from './src/voice';
 
 type Tab = 'Login' | 'Shop' | 'Settings';
-type Mode = 'cloud' | 'pipeline' | 'realtime' | 'elevenlabs';
+type Mode = 'cloud' | 'pipeline' | 'realtime' | 'elevenlabs' | 'deepgram';
 
 const GREETING = 'Hi! How can I help?';
 // Read on every utterance, so picking a voice in Settings applies immediately.
@@ -62,6 +63,17 @@ export default function App() {
         app: APP_CONTEXT,
         realtime: openAIRealtimeModel({
           connect: async () => ({ url: `${SERVER_URL.replace(/^http/, 'ws')}/realtime?model=${encodeURIComponent(realtimeModel)}` }),
+          audio: speaker(),
+        }),
+      };
+    }
+    if (mode === 'deepgram') {
+      return {
+        greeting: GREETING,
+        app: APP_CONTEXT,
+        realtime: deepgramAgentModel({
+          // The server relays to Deepgram's Voice Agent with the key; audio streams both ways.
+          connect: async () => ({ url: `${SERVER_URL.replace(/^http/, 'ws')}/deepgram/agent` }),
           audio: speaker(),
         }),
       };
@@ -291,13 +303,18 @@ function SettingsScreen(props: {
               ['pipeline', 'On-device speech + chat model'],
               ['realtime', 'Voice model (realtime)'],
               ['elevenlabs', 'ElevenLabs agent'],
+              ['deepgram', 'Deepgram voice agent'],
             ]}
             value={props.mode}
             onChange={m => props.setMode(m as Mode)}
           />
-          {props.mode !== 'elevenlabs' && <Text style={styles.label}>{props.mode === 'pipeline' ? 'Chat model' : 'Voice model'}</Text>}
-          {props.mode === 'elevenlabs' ? (
-            <Text style={styles.muted}>ElevenLabs listens, decides when you're done, and speaks; its agent presses the buttons here.</Text>
+          {props.mode !== 'elevenlabs' && props.mode !== 'deepgram' && (
+            <Text style={styles.label}>{props.mode === 'pipeline' ? 'Chat model' : 'Voice model'}</Text>
+          )}
+          {props.mode === 'elevenlabs' || props.mode === 'deepgram' ? (
+            <Text style={styles.muted}>
+              {props.mode === 'elevenlabs' ? 'ElevenLabs' : 'Deepgram'} listens, decides when you're done, and speaks; its agent presses the buttons here.
+            </Text>
           ) : props.mode === 'pipeline' ? (
             <Chips options={CHAT_MODELS.map(m => [m, m])} value={props.chatModel} onChange={props.setChatModel} />
           ) : props.mode === 'cloud' ? (

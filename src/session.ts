@@ -29,6 +29,8 @@ export interface RealtimeControls {
   interrupt?(): void;
   /** Tell the agent something without a reply (e.g. the user changed the screen themselves). */
   context?(text: string): void;
+  /** The user typed a request instead of saying it: the agent answers it like speech. */
+  text?(text: string): void;
 }
 
 /** One voice session, as the core hands it to a transport. Resolve `run` when it's over. */

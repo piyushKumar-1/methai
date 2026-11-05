@@ -218,6 +218,8 @@ export class VoiceAssistant {
   /** A typed request waiting for the next listening turn, and the turn listening right now. */
   private pendingText: string | null = null;
   private typedHandler: ((text: string) => void) | null = null;
+  /** A running speech-to-speech session's way to take a typed request. */
+  private realtimeText: ((text: string) => void) | null = null;
   /** Spoken progress updates still playing while the agent works; answers wait for them. */
   private progressSpeech: Promise<void> = Promise.resolve();
   private listeners = new Set<(s: AssistantStatus) => void>();
@@ -283,6 +285,7 @@ export class VoiceAssistant {
     const request = text.trim();
     if (!request) return;
     if (this.typedHandler) return this.typedHandler(request);
+    if (this.realtimeText) return this.realtimeText(request);
     this.pendingText = request;
     if (!this.abort) void this.start();
   }
@@ -625,6 +628,17 @@ export class VoiceAssistant {
       this.trace({ type: 'context', text });
     };
 
+    /** A typed request: the same turn as a spoken one, sent as text. */
+    const typed = (text: string) => {
+      if (!controls.text || signal.aborted) return;
+      clear();
+      this.set({ state: 'thinking', transcript: text });
+      this.userSaid(text);
+      if (session.stop(text)) endAfterReply = true;
+      controls.text(text);
+    };
+    this.realtimeText = typed;
+
     try {
       await transport.run({
         greeting: session.greeting,
@@ -656,12 +670,17 @@ export class VoiceAssistant {
               this.set({ state: this.userTurns === 0 ? 'greeting' : 'speaking' });
               if (event.level !== undefined) this.controller.reportVoice('speaking', event.level);
               break;
-            case 'agent-done':
+            case 'agent-done': {
               if (endAfterReply) return this.endWith('stop-phrase');
               if (toolsRunning > 0) break;
               this.set({ state: 'listening', transcript: '' });
               awaitUser();
+              // A session started by typing: the request goes in once the greeting has played.
+              const pending = this.pendingText;
+              this.pendingText = null;
+              if (pending) typed(pending);
               break;
+            }
             case 'agent-text':
               this.addToLog('assistant', event.text);
               break;
@@ -703,6 +722,7 @@ export class VoiceAssistant {
       this.endReason ??= 'agent';
     } finally {
       clear();
+      this.realtimeText = null;
     }
   }
 }

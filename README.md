@@ -458,6 +458,23 @@ partial transcripts (about a second behind the voice) become the live transcript
 the single-use token (`POST /v1/single-use-token/realtime_scribe`; the demo server's
 `GET /elevenlabs/scribe-url`).
 
+### Deepgram voice agents
+
+`deepgramAgentModel` talks to Deepgram's [Voice Agent API](https://developers.deepgram.com/docs/voice-agent):
+the mic streams up as raw PCM and the agent's voice streams back as raw PCM while it is spoken.
+Deepgram listens, takes turns and speaks; its LLM calls the screen tools as client-side functions,
+which run in the app. Each session sends the app's prompt with the live screen and the greeting.
+
+```ts
+const realtime = deepgramAgentModel({
+  // A relay that adds `Authorization: Token <key>` (the demo server's /deepgram/agent).
+  connect: async () => ({ url: 'wss://your-backend.example.com/deepgram/agent' }),
+  audio: devicePcmAudio(),
+  think: { type: 'open_ai', model: 'gpt-4o-mini' }, // default; any provider Deepgram supports
+  speak: { type: 'deepgram', model: 'aura-2-thalia-en' }, // default
+});
+```
+
 ## Voice-reactive glow
 
 While a session runs, an aura of colours flows along the bottom of the screen. It reacts to the
