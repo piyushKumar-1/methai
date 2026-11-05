@@ -246,12 +246,20 @@ export class VoiceAssistant {
 
   constructor(
     private readonly controller: ScreenContextController,
-    /** A config, or a getter read at the start of every session (so it can change at runtime). */
-    private readonly configSource: AssistantConfig | (() => AssistantConfig),
+    /**
+     * A config, or a getter read at the start of every session (so it can change at runtime).
+     * Undefined: the assistant is unavailable (e.g. turned off remotely); start() does nothing.
+     */
+    private readonly configSource: AssistantConfig | undefined | (() => AssistantConfig | undefined),
   ) {}
 
-  private get config(): AssistantConfig {
+  private get config(): AssistantConfig | undefined {
     return typeof this.configSource === 'function' ? this.configSource() : this.configSource;
+  }
+
+  /** Whether there is an assistant to start (a config is set). */
+  get available(): boolean {
+    return !!this.config;
   }
 
   getStatus(): AssistantStatus {
@@ -267,7 +275,7 @@ export class VoiceAssistant {
 
   private trace(event: AssistantEvent) {
     try {
-      this.config.onEvent?.(event);
+      this.config?.onEvent?.(event);
     } catch {}
   }
 
@@ -367,7 +375,7 @@ export class VoiceAssistant {
     signal.addEventListener('abort', onAbort, { once: true });
     this.interruptHandler = () => speech.abort();
     try {
-      const interruptible = (this.config.voiceInterruptions ?? 'smart') !== 'off';
+      const interruptible = (this.config?.voiceInterruptions ?? 'smart') !== 'off';
       const result = (await voice.speak(text, speech.signal, { interruptible })) || undefined;
       const cut = result?.interrupted || (speech.signal.aborted && !signal.aborted);
       if (cut) {
@@ -406,7 +414,7 @@ export class VoiceAssistant {
         mic.abort();
         resolve({ text });
       };
-      const endOfTurn = this.config.endOfTurn;
+      const endOfTurn = this.config?.endOfTurn;
       voice
         .listen(
           mic.signal,
@@ -422,11 +430,11 @@ export class VoiceAssistant {
   }
 
   async start(): Promise<void> {
-    if (this.abort) return;
+    const config = this.config;
+    if (this.abort || !config) return;
     const abort = new AbortController();
     this.abort = abort;
     const { signal } = abort;
-    const config = this.config;
     const model = 'model' in config ? config.model : undefined;
     const previous = this.conversation;
     const resumed =
@@ -668,7 +676,7 @@ export class VoiceAssistant {
         signal,
         // Read live: the user can switch between interrupting and taking turns mid-conversation.
         get voiceInterruptions() {
-          return assistant.config.voiceInterruptions ?? 'smart';
+          return assistant.config?.voiceInterruptions ?? 'smart';
         },
         runTool: async (name, input) => {
           clear();

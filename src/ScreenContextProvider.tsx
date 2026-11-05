@@ -231,7 +231,10 @@ export interface ScreenContextProviderProps {
   children?: ReactNode;
   /** Overrides the auto-detected react-navigation route name. */
   getScreenName?: () => string | undefined;
-  /** Voice assistant setup. Read at the start of each session, so it can change at runtime. */
+  /**
+   * Voice assistant setup. Read at the start of each session, so it can change at runtime; leaving
+   * it out (e.g. turned off remotely) makes the assistant unavailable without remounting the app.
+   */
   assistant?: AssistantConfig;
   /** Edge glow shown while an agent session runs. `false` turns it off. */
   glow?: false | Omit<AgentGlowProps, 'controller'>;
@@ -246,10 +249,16 @@ export class ScreenContextProvider extends Component<ScreenContextProviderProps>
     () => currentRootOf(fiberOfInstance(this)),
     () => this.props.getScreenName?.(),
   );
-  readonly assistant = this.props.assistant ? new VoiceAssistant(this.controller, () => this.props.assistant!) : null;
+  // Always there, so the assistant can come and go (props.assistant) without changing the tree.
+  readonly assistant = new VoiceAssistant(this.controller, () => this.props.assistant);
 
   componentDidMount() {
     defaultController = this.controller;
+  }
+
+  componentDidUpdate(prev: ScreenContextProviderProps) {
+    // Turned off while a session runs: end it.
+    if (prev.assistant && !this.props.assistant) this.assistant.cancel();
   }
 
   componentWillUnmount() {
@@ -277,6 +286,8 @@ export function useScreenContext(): ScreenContextController {
 }
 
 export interface UseAssistant extends AssistantStatus {
+  /** False when the provider has no assistant config (not set up, or turned off). */
+  available: boolean;
   /** Start; while speaking, interrupt; otherwise end the session. Wire it to any button. */
   toggle: () => void;
   /** Cut the current spoken answer short and listen again. */
@@ -289,13 +300,14 @@ export interface UseAssistant extends AssistantStatus {
 
 export function useAssistant(): UseAssistant {
   const assistant = useContext(AssistantCtx);
-  if (!assistant) throw new Error('useAssistant needs <ScreenContextProvider assistant={...}>.');
+  if (!assistant) throw new Error('useAssistant needs a <ScreenContextProvider> above it.');
   const status = useSyncExternalStore(
     cb => assistant.subscribe(cb),
     () => assistant.getStatus(),
   );
   return {
     ...status,
+    available: assistant.available,
     toggle: () => assistant.toggle(),
     interrupt: () => assistant.interrupt(),
     start: () => assistant.start(),

@@ -67,7 +67,7 @@ export function AssistantOverlay({
   interruptions,
   accessibilityLabel = 'Voice assistant',
 }: AssistantOverlayProps) {
-  const { state, transcript, log, toggle, submitText } = useAssistant();
+  const { state, transcript, log, toggle, submitText, available } = useAssistant();
   const { height } = useWindowDimensions();
   const [typing, setTyping] = useState(false);
   const [typed, setTyped] = useState('');
@@ -90,6 +90,9 @@ export function AssistantOverlay({
     setTyped('');
     submitText(typed);
   };
+
+  // No assistant (not set up, or turned off remotely): nothing to show.
+  if (!available) return null;
 
   return (
     <AIIgnore>

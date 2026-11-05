@@ -102,3 +102,36 @@ test('Interrupt / Take turns: the switch shows while active, and the choice reac
   await act(async () => provider.assistant!.cancel());
   await act(async () => renderer.unmount());
 });
+
+test('turned off remotely: the button goes away, the app is not remounted, and it comes back', async () => {
+  const voice: VoiceIO = { speak: async () => {}, listen: async () => '' };
+  const model: AgentModel = { start: async () => ({ text: 'ok', toolCalls: [] }), continue: jest.fn() };
+  let mounts = 0;
+  function Screen() {
+    useState(() => mounts++);
+    return <View />;
+  }
+  function App({ on }: { on: boolean }) {
+    return (
+      <ScreenContextProvider assistant={on ? { voice, model } : undefined}>
+        <Screen />
+        <AssistantOverlay />
+      </ScreenContextProvider>
+    );
+  }
+  let r!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    r = TestRenderer.create(<App on />);
+  });
+  const button = () => r.root.findAllByProps({ accessibilityLabel: 'Voice assistant' });
+  expect(button().length).toBeGreaterThan(0);
+  await act(async () => r.update(<App on={false} />));
+  expect(button()).toHaveLength(0);
+  const provider = r.root.findByType(ScreenContextProvider).instance as ScreenContextProvider;
+  await act(async () => provider.assistant.start()); // nothing to start
+  expect(provider.assistant.getStatus().state).toBe('idle');
+  await act(async () => r.update(<App on />));
+  expect(button().length).toBeGreaterThan(0);
+  expect(mounts).toBe(1);
+  await act(async () => r.unmount());
+});
