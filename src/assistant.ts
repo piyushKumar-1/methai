@@ -11,6 +11,14 @@ export interface ListenOptions {
   endOfTurnDelay?: (transcript: string) => number;
 }
 
+export interface SpeakOptions {
+  /**
+   * False: the user has chosen to take turns, so don't listen for them talking over this (a tap
+   * still cuts it off). Default true.
+   */
+  interruptible?: boolean;
+}
+
 export interface SpeakResult {
   /** The user stopped it by voice (a stop word while it talked). */
   interrupted?: boolean;
@@ -21,7 +29,7 @@ export interface SpeakResult {
 /** Speech-to-text + text-to-speech, e.g. on-device recognizers (see example/voice-adapters.ts). */
 export interface VoiceIO {
   /** Resolves when done or cut off; report a voice interruption and how far it got, if known. */
-  speak(text: string, signal: AbortSignal): Promise<void | SpeakResult>;
+  speak(text: string, signal: AbortSignal, options?: SpeakOptions): Promise<void | SpeakResult>;
   /**
    * Listens until the user stops talking and resolves with the final transcript ('' if nothing).
    * `onLevel` takes the mic loudness (0–1) for visuals, if the engine reports it. End the turn
@@ -186,7 +194,12 @@ export type AssistantConfig = {
   toolMiddleware?: ToolMiddleware[];
   /** Everything that happens (turns, tool calls, interruptions, why a session ended), for logs. */
   onEvent?: (event: AssistantEvent) => void;
-  /** Speech-to-speech voices: how the user can cut the agent off by talking. Default 'smart'. */
+  /**
+   * Whether the user can cut the agent off by talking, for every kind of assistant. 'smart'
+   * (default): talking over it stops it (its own voice doesn't). 'off': take turns; it always
+   * finishes, and a tap still cuts it off. 'raw': speech-to-speech voices send the mic as is (only
+   * with reliable echo cancellation). Read live, so a toggle applies mid-conversation.
+   */
   voiceInterruptions?: VoiceInterruptions;
   /** Speech-to-speech voices: end the session if the user says nothing after the greeting. Default 8000ms. */
   noSpeechTimeoutMs?: number;
@@ -352,7 +365,8 @@ export class VoiceAssistant {
     signal.addEventListener('abort', onAbort, { once: true });
     this.interruptHandler = () => speech.abort();
     try {
-      const result = (await voice.speak(text, speech.signal)) || undefined;
+      const interruptible = (this.config.voiceInterruptions ?? 'smart') !== 'off';
+      const result = (await voice.speak(text, speech.signal, { interruptible })) || undefined;
       const cut = result?.interrupted || (speech.signal.aborted && !signal.aborted);
       if (cut) {
         const chars = result?.spokenChars;
@@ -592,6 +606,7 @@ export class VoiceAssistant {
     },
   ): Promise<void> {
     const { signal } = session;
+    const assistant = this;
     const conversation = config.conversation ?? 'continuous';
     let timer: ReturnType<typeof setTimeout> | undefined;
     let endAfterReply = false;
@@ -649,7 +664,10 @@ export class VoiceAssistant {
         instructions: session.instructions,
         tools: SCREEN_TOOLS,
         signal,
-        voiceInterruptions: config.voiceInterruptions ?? 'smart',
+        // Read live: the user can switch between interrupting and taking turns mid-conversation.
+        get voiceInterruptions() {
+          return assistant.config.voiceInterruptions ?? 'smart';
+        },
         runTool: async (name, input) => {
           clear();
           toolsRunning++;

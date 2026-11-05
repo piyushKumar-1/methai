@@ -294,7 +294,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
       if (await ensureTts()) await prepareVoice(locale());
     },
 
-    async speak(text, signal) {
+    async speak(text, signal, options) {
       const say = speakable(text);
       if (signal.aborted || !say) return;
       lastSpoken = say;
@@ -312,7 +312,7 @@ export function deviceVoice(opts: DeviceVoiceOptions): DeviceVoice {
           started = true;
           clearTimeout(startFallback);
           log(`speaking after ${Date.now() - askedAt}ms`);
-          if (bargeIn && !signal.aborted)
+          if (bargeIn && options?.interruptible !== false && !signal.aborted)
             watch = watchForInterruption(say, () => {
               interrupted = true;
               stopSpeaking();

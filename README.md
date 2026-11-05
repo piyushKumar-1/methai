@@ -280,6 +280,17 @@ timeouts, stop phrases, taps, captions, screen-change notes, tool rules and trac
   }}>
 ```
 
+**Interrupt or take turns: the user's choice.** `voiceInterruptions: 'off'` makes every kind of
+assistant take turns: it always finishes, then listens (a tap still cuts it off). It is read live,
+so it can follow a setting; `<AssistantOverlay interruptions={{ value, onChange }} />` shows an
+Interrupt / Take turns switch under the button while the assistant is active:
+
+```ts
+const [style, setStyle] = useState<ConversationStyle>(saved ?? 'interrupt');
+<ScreenContextProvider assistant={{ ...config, voiceInterruptions: style === 'turns' ? 'off' : 'smart' }}>
+  <AssistantOverlay interruptions={{ value: style, onChange: s => (setStyle(s), save(s)) }} />
+```
+
 **Talking over the agent.** Without echo cancellation (Android's default mic, emulators, laptop
 speakers) the mic hears the agent, which then keeps interrupting itself. With 'smart', the mic is
 held back from the agent while it talks and checked in the app instead: words in the live captions

@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { Text, TextInput, View } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
-import { AssistantOverlay, ScreenContextProvider, toCaptionText, typedSoFar, type AgentModel, type VoiceIO } from '../src';
+import { AssistantOverlay, ScreenContextProvider, toCaptionText, typedSoFar, type AgentModel, type ConversationStyle, type VoiceIO } from '../src';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -65,4 +66,39 @@ test('a typed request starts a session without the greeting, and the reply shows
   });
   await act(async () => renderer.unmount());
   jest.useRealTimers();
+});
+
+test('Interrupt / Take turns: the switch shows while active, and the choice reaches the voice at once', async () => {
+  const interruptible: (boolean | undefined)[] = [];
+  const voice: VoiceIO = {
+    speak: async (_text, _signal, options) => void interruptible.push(options?.interruptible),
+    listen: signal => new Promise(resolve => signal.addEventListener('abort', () => resolve(''))),
+  };
+  const model: AgentModel = { start: async () => ({ text: 'Done.', toolCalls: [] }), continue: jest.fn() };
+  function App() {
+    const [style, setStyle] = useState<ConversationStyle>('interrupt');
+    return (
+      <ScreenContextProvider assistant={{ greeting: 'Hi', voice, model, voiceInterruptions: style === 'turns' ? 'off' : 'smart' }}>
+        <View />
+        <AssistantOverlay interruptions={{ value: style, onChange: setStyle }} />
+      </ScreenContextProvider>
+    );
+  }
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(<App />);
+  });
+  const switchFor = () => renderer.root.findAllByProps({ accessibilityRole: 'switch' });
+  expect(switchFor()).toHaveLength(0); // idle: no switch
+  const provider = renderer.root.findByType(ScreenContextProvider).instance as ScreenContextProvider;
+  await act(async () => void provider.assistant!.start());
+  expect(interruptible).toEqual([true]); // the greeting, in 'interrupt'
+  expect(switchFor()[0].props.accessibilityState).toEqual({ checked: true });
+
+  await act(async () => switchFor()[0].props.onPress());
+  expect(switchFor()[0].props.accessibilityState).toEqual({ checked: false });
+  await act(async () => provider.assistant!.submitText('add apples'));
+  expect(interruptible).toEqual([true, false]); // the answer, now taking turns
+  await act(async () => provider.assistant!.cancel());
+  await act(async () => renderer.unmount());
 });

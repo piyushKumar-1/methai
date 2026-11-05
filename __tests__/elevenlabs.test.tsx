@@ -345,3 +345,55 @@ test('ElevenLabs agent session: talking over the agent cuts it off; its own echo
   await act(async () => assistant.cancel());
   await act(async () => r.unmount());
 });
+
+test('taking turns: while the agent talks, nothing the user says cuts it off; switching back lets them in', async () => {
+  const { audio, log, mic } = fakeAudio();
+  const sockets: FakeWS[] = [];
+  class TrackedWS extends FakeWS {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  let mode: 'smart' | 'off' = 'off';
+  const realtime = elevenLabsAgentModel({ connect: async () => ({ url: 'wss://el/signed' }), liveTranscript: async () => ({ url: 'wss://el/scribe' }), audio, WebSocketImpl: TrackedWS });
+  const config = { greeting: 'Hi', realtime, get voiceInterruptions() { return mode; } };
+  let r!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    r = TestRenderer.create(
+      <ScreenContextProvider assistant={config}>
+        <Shop />
+      </ScreenContextProvider>,
+    );
+  });
+  const assistant = (r.root.findByType(ScreenContextProvider).instance as ScreenContextProvider).assistant!;
+  await act(async () => void assistant.start());
+  await wait(0);
+  const [agent] = sockets;
+  await act(async () => {
+    agent.server({ type: 'conversation_initiation_metadata', conversation_initiation_metadata_event: { user_input_audio_format: 'pcm_24000', agent_output_audio_format: 'pcm_24000' } });
+    agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(240)), event_id: 1 } });
+  });
+  await wait(450);
+  const scribe = sockets[1];
+  const longReply = () =>
+    act(async () => {
+      agent.server({ type: 'agent_response', agent_response_event: { agent_response: 'The Auto is 45 rupees.', event_id: 2 } });
+      agent.server({ type: 'audio', audio_event: { audio_base_64: floatToPcm16Base64(new Float32Array(72000)), event_id: 2 } });
+    });
+
+  // Taking turns: the user's words over the reply don't stop it, and the agent hears silence.
+  await longReply();
+  const loud = floatToPcm16Base64(new Float32Array(2400).fill(0.5));
+  for (let i = 0; i < 5; i++) mic(loud);
+  await act(async () => scribe.server({ message_type: 'partial_transcript', text: 'no take me to the airport' }));
+  expect(log.filter(l => l === 'flush')).toHaveLength(0);
+  expect(agent.sent.at(-1)).toEqual({ user_audio_chunk: floatToPcm16Base64(new Float32Array(2400)) });
+
+  // Switched to interrupting mid-reply: the same words now cut it off.
+  mode = 'smart';
+  await act(async () => scribe.server({ message_type: 'partial_transcript', text: 'no take me to the airport instead' }));
+  expect(log.at(-1)).toBe('flush');
+  await act(async () => assistant.cancel());
+  await act(async () => r.unmount());
+});

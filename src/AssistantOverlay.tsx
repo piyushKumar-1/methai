@@ -38,8 +38,18 @@ export interface AssistantOverlayProps {
   captions?: boolean;
   /** Typing pace of the reply in the bubble, in characters a second. Default 15. */
   captionCharsPerSecond?: number;
+  /**
+   * A switch under the button, while the assistant is active, between talking over it
+   * ('interrupt') and taking turns ('turns'). Controlled: keep (and save) the choice in the app and
+   * pass `voiceInterruptions: value === 'turns' ? 'off' : 'smart'` in the assistant config; it
+   * applies at once, mid-conversation too.
+   */
+  interruptions?: { value: ConversationStyle; onChange: (value: ConversationStyle) => void };
   accessibilityLabel?: string;
 }
+
+/** 'interrupt': talking over the assistant stops it. 'turns': it always finishes, then listens. */
+export type ConversationStyle = 'interrupt' | 'turns';
 
 /**
  * The voice assistant's on-screen UI: a button docked to the screen edge (tap to start, tap while it
@@ -54,6 +64,7 @@ export function AssistantOverlay({
   typeToAsk = false,
   captions = true,
   captionCharsPerSecond = 15,
+  interruptions,
   accessibilityLabel = 'Voice assistant',
 }: AssistantOverlayProps) {
   const { state, transcript, log, toggle, submitText } = useAssistant();
@@ -86,30 +97,41 @@ export function AssistantOverlay({
         pointerEvents="box-none"
         style={[styles.dock, left ? { left: 0, flexDirection: 'row' } : { right: 0, flexDirection: 'row-reverse' }, { top: Math.round(height * (position.vertical ?? 0.42) - size / 2) }]}
       >
-        <Pressable
-          onPress={toggle}
-          onLongPress={typeToAsk ? () => setTyping(t => !t) : undefined}
-          accessibilityRole="button"
-          accessibilityLabel={accessibilityLabel}
-          accessibilityHint={state === 'idle' ? 'Starts the voice assistant' : speaking ? 'Skips the rest of the answer' : 'Ends the conversation'}
-          accessibilityState={{ busy: thinking }}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.button,
-            {
-              width: size + 6,
-              height: size,
-              ...(left
-                ? { paddingLeft: 6, borderTopRightRadius: size / 2, borderBottomRightRadius: size / 2 }
-                : { paddingRight: 6, borderTopLeftRadius: size / 2, borderBottomLeftRadius: size / 2 }),
-            },
-            typeof fill === 'string' ? { backgroundColor: fill } : background(`linear-gradient(135deg, ${fill[0]}, ${fill[1]})`),
-            pressed && styles.pressed,
-          ]}
-        >
-          {state === 'listening' && <Pulse color={accent} size={size} />}
-          {thinking ? <Dots color={fg} /> : speaking ? <View style={[styles.stop, { backgroundColor: fg }]} /> : icon ?? <MicGlyph color={fg} />}
-        </Pressable>
+        <View>
+          <Pressable
+            onPress={toggle}
+            onLongPress={typeToAsk ? () => setTyping(t => !t) : undefined}
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
+            accessibilityHint={state === 'idle' ? 'Starts the voice assistant' : speaking ? 'Skips the rest of the answer' : 'Ends the conversation'}
+            accessibilityState={{ busy: thinking }}
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.button,
+              {
+                width: size + 6,
+                height: size,
+                ...(left
+                  ? { paddingLeft: 6, borderTopRightRadius: size / 2, borderBottomRightRadius: size / 2 }
+                  : { paddingRight: 6, borderTopLeftRadius: size / 2, borderBottomLeftRadius: size / 2 }),
+              },
+              typeof fill === 'string' ? { backgroundColor: fill } : background(`linear-gradient(135deg, ${fill[0]}, ${fill[1]})`),
+              pressed && styles.pressed,
+            ]}
+          >
+            {state === 'listening' && <Pulse color={accent} size={size} />}
+            {thinking ? <Dots color={fg} /> : speaking ? <View style={[styles.stop, { backgroundColor: fg }]} /> : icon ?? <MicGlyph color={fg} />}
+          </Pressable>
+          {interruptions && state !== 'idle' && (
+            <StyleSwitch
+              value={interruptions.value}
+              onChange={interruptions.onChange}
+              accent={accent}
+              fontFamily={theme.fontFamily}
+              style={[{ top: size + 8 }, left ? { left: 4 } : { right: 4 }]}
+            />
+          )}
+        </View>
         {typing ? (
           <View style={[styles.bubble, bubbleSide(left), { backgroundColor: theme.bubbleBackground ?? '#fff' }]}>
             <TextInput
@@ -144,6 +166,43 @@ export function AssistantOverlay({
         )}
       </View>
     </AIIgnore>
+  );
+}
+
+/** Interrupt ⇄ Take turns, as two segments; a tap anywhere switches. */
+function StyleSwitch({
+  value,
+  onChange,
+  accent,
+  fontFamily,
+  style,
+}: {
+  value: ConversationStyle;
+  onChange: (value: ConversationStyle) => void;
+  accent: string;
+  fontFamily?: string;
+  style: object;
+}) {
+  const interrupt = value === 'interrupt';
+  return (
+    <Pressable
+      onPress={() => onChange(interrupt ? 'turns' : 'interrupt')}
+      accessibilityRole="switch"
+      accessibilityLabel="Let me interrupt the assistant"
+      accessibilityState={{ checked: interrupt }}
+      accessibilityHint={interrupt ? 'Switches to taking turns: it finishes before you talk' : 'Switches to interrupting: talk over it to stop it'}
+      hitSlop={6}
+      style={[styles.switch, style]}
+    >
+      {(['interrupt', 'turns'] as const).map(option => (
+        <Text
+          key={option}
+          style={[styles.switchOption, { fontFamily }, value === option ? { backgroundColor: accent, color: '#fff' } : { color: '#555' }]}
+        >
+          {option === 'interrupt' ? 'Interrupt' : 'Take turns'}
+        </Text>
+      ))}
+    </Pressable>
   );
 }
 
@@ -255,5 +314,18 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
   },
   caption: { fontSize: 15, lineHeight: 21 },
+  switch: {
+    position: 'absolute',
+    flexDirection: 'row',
+    padding: 2,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+  },
+  switchOption: { fontSize: 12, fontWeight: '600', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' },
   input: { minWidth: 200, paddingVertical: 4, fontSize: 15 },
 });

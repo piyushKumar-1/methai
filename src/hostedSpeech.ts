@@ -1,4 +1,4 @@
-import type { SpeakResult, VoiceIO } from './assistant';
+import type { SpeakOptions, SpeakResult, VoiceIO } from './assistant';
 import { floatToPcm16Base64, pcmLevel, resample } from './pcm';
 import type { PcmAudioIO } from './realtime';
 
@@ -54,7 +54,7 @@ export function withHostedSpeech(voice: VoiceIO, opts: HostedSpeechOptions): Voi
   const doFetch = opts.fetchImpl ?? fetch;
   const levelListeners = new Set<(level: number) => void>();
 
-  const speak = async (text: string, signal: AbortSignal): Promise<void | SpeakResult> => {
+  const speak = async (text: string, signal: AbortSignal, options?: SpeakOptions): Promise<void | SpeakResult> => {
     const say = speakable(text);
     if (signal.aborted || !say) return;
     let res: Response;
@@ -69,7 +69,7 @@ export function withHostedSpeech(voice: VoiceIO, opts: HostedSpeechOptions): Voi
     } catch (e) {
       if (signal.aborted) return { spokenChars: 0 };
       opts.onError?.(e as Error);
-      return voice.speak(text, signal);
+      return voice.speak(text, signal, options);
     }
     const rate = Number(/rate=(\d+)/.exec(res.headers.get('content-type') ?? '')?.[1]) || opts.defaultRate || RATE;
 

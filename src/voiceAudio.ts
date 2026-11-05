@@ -28,7 +28,8 @@ const BARGE_IN_WORDS = 2;
 export type VoiceInterruptions = 'smart' | 'raw' | 'off';
 
 export interface VoiceAudioOptions {
-  voiceInterruptions: VoiceInterruptions;
+  /** A getter is read on every mic chunk, so the user's choice applies at once. */
+  voiceInterruptions: VoiceInterruptions | (() => VoiceInterruptions);
   /**
    * Live captions: a Scribe realtime speech-to-text URL (single-use token included), fed the same
    * mic audio. Its partial transcripts reach `onCaption` while the user talks; they also let
@@ -105,7 +106,8 @@ export function voiceAudio(audio: PcmAudioIO, opts: VoiceAudioOptions): VoiceAud
   let echoSamples = 0;
   let held: string[] = [];
   const speaking = () => Date.now() < playingUntil + ECHO_TAIL_MS;
-  const smart = opts.voiceInterruptions === 'smart';
+  const mode = () => (typeof opts.voiceInterruptions === 'function' ? opts.voiceInterruptions() : opts.voiceInterruptions);
+  const smart = () => mode() === 'smart';
 
   const stopAgent = () => {
     audio.flush();
@@ -144,7 +146,7 @@ export function voiceAudio(audio: PcmAudioIO, opts: VoiceAudioOptions): VoiceAud
           if (speaking()) {
             // The mic hears the agent too: only words it isn't saying (or "wait", "stop"…) are the user's.
             const isUser = isInterruption(text, agentText) || newWords(text, agentText).length >= BARGE_IN_WORDS;
-            if (smart && isUser) bargeIn();
+            if (smart() && isUser) bargeIn();
             if (!isUser || speaking()) return;
           }
           if (event.message_type === 'partial_transcript') opts.onCaption?.(text, false);
@@ -167,12 +169,12 @@ export function voiceAudio(audio: PcmAudioIO, opts: VoiceAudioOptions): VoiceAud
         if (closed) return;
         const level = pcmLevel(chunk);
         const talking = speaking();
-        if (captions?.readyState === 1 && (smart || !talking)) captions.send(JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: chunk, sample_rate: RATE }));
+        if (captions?.readyState === 1 && (smart() || !talking)) captions.send(JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: chunk, sample_rate: RATE }));
 
-        if (talking && opts.voiceInterruptions !== 'raw') {
+        if (talking && mode() !== 'raw') {
           // Held back so the agent never hears itself; silence keeps its stream in time.
           sendChunk(floatToPcm16Base64(new Float32Array(pcm16Base64ToFloat(chunk).length)));
-          if (!smart) return;
+          if (!smart()) return;
           held.push(chunk);
           if (held.length > HELD_MS / 100) held.shift();
           // Louder than its echo could be, for a moment: the user is talking over it.

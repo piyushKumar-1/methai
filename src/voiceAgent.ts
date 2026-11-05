@@ -124,7 +124,8 @@ export function voiceAgentModel(protocolSource: VoiceAgentProtocol | (() => Voic
       ws.binaryType = 'arraybuffer';
       let cutOff: (() => void) | undefined;
       const mic = voiceAudio(opts.audio, {
-        voiceInterruptions: opts.voiceInterruptions ?? session.voiceInterruptions,
+        // Read live from the session, so the user can switch between interrupting and taking turns.
+        voiceInterruptions: () => opts.voiceInterruptions ?? session.voiceInterruptions,
         liveTranscript: opts.liveTranscript,
         WebSocketImpl: opts.WebSocketImpl,
         // The provider's transcript is the final one; captions only show the words as they come.
