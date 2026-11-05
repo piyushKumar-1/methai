@@ -28,20 +28,24 @@ export const composeTools = (run: RunTool, middleware: ToolMiddleware[]): RunToo
 export interface ConfirmOptions {
   /** Controls that need a yes first, by element id and label. */
   isSensitive: (elementId: string, label: string | undefined) => boolean;
-  /** Whether the user's reply agrees. Default: anything that doesn't start with no / don't / wait / stop. */
+  /** Whether the user's reply agrees. Default: a yes ("yes", "sure", "go ahead", "book it", "haan"…) that doesn't start with no / don't / wait. */
   isConfirming?: (reply: string) => boolean;
 }
 
 const NEGATIVE = /^\s*(no|nope|nah|don'?t|do not|wait|stop|not now|never ?mind|cancel that)\b/i;
+const AFFIRMATIVE = /\b(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|confirm|book it|please do|proceed|correct|haan|han|ha|ji|theek)\b/i;
 
 /**
- * Presses on controls matching `isSensitive` are refused unless the user's latest reply agreed
- * (one yes allows one press); the refusal tells the model to ask. Prompts can ask a model to
- * confirm; only this guarantees it, for any kind of assistant.
+ * Presses on controls matching `isSensitive` are refused until the agent has asked and the user's
+ * reply to that question agreed (one yes allows one press). The refusal tells the model to ask.
+ * Prompts can ask a model to confirm; only this guarantees it, for any kind of assistant.
  */
 export function confirmBefore(opts: ConfirmOptions): ToolMiddleware {
-  const isConfirming = opts.isConfirming ?? ((reply: string) => reply.trim().length > 0 && !NEGATIVE.test(reply));
-  let usedYes = ''; // the reply that already allowed a press, as session:turn
+  const isConfirming = opts.isConfirming ?? ((reply: string) => AFFIRMATIVE.test(reply) && !NEGATIVE.test(reply));
+  // When the agent was last refused (and so asked), and the reply that already allowed a press,
+  // both as session:turn. A yes counts only if the user said it after being asked.
+  let askedAt = { session: -1, turn: -1 };
+  let usedYes = '';
   return next => async (call, ctx) => {
     const id = parseArgs(call.input)?.element_id;
     if (typeof id !== 'string') return next(call, ctx);
@@ -50,12 +54,13 @@ export function confirmBefore(opts: ConfirmOptions): ToolMiddleware {
       label = ctx.controller.captureSync().elements.find(e => e.id === id)?.label;
     } catch {}
     if (!opts.isSensitive(id, label)) return next(call, ctx);
-    // The request that started the session is not a yes: the model hasn't asked anything yet.
     const reply = `${ctx.sessionId}:${ctx.userTurns}`;
-    if (ctx.userTurns > 1 && reply !== usedYes && isConfirming(ctx.lastUserText)) {
+    const answeredQuestion = askedAt.session === ctx.sessionId && ctx.userTurns > askedAt.turn;
+    if (answeredQuestion && reply !== usedYes && isConfirming(ctx.lastUserText)) {
       usedYes = reply;
       return next(call, ctx);
     }
+    askedAt = { session: ctx.sessionId, turn: ctx.userTurns };
     return {
       isError: true,
       content: `Not done: "${label ?? id}" needs the user's explicit yes first. Ask them in one short question with the key detail (what and how much), and wait for the answer.`,

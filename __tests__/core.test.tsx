@@ -135,3 +135,60 @@ test('newWords tells the user from the agent echo', () => {
   expect(newWords('the auto to cub and park is forty five', said)).toEqual([]);
   expect(newWords('no take me to the airport instead', said)).toEqual(['take', 'airport', 'instead']);
 });
+
+test('confirm: a yes counts only as the answer to the question; an echoed typed request is not a turn', async () => {
+  const t = scriptedTransport();
+  const sent: string[] = [];
+  const { r, assistant } = await mount({ greeting: 'Hi', realtime: t.transport, confirm });
+  let run!: Promise<void>;
+  await act(async () => {
+    run = assistant.start();
+  });
+  await act(async () => new Promise(res => setTimeout(res, 10)));
+  const s = t.session();
+  s.handle({ text: text => sent.push(text) });
+  await act(async () => s.emit({ type: 'agent-done' }));
+
+  // Typed, then repeated back by the transport as the user's words: still one turn.
+  await act(async () => assistant.submitText('book an auto to Cubbon Park'));
+  await act(async () => s.emit({ type: 'user-text', text: 'book an auto to Cubbon Park', final: true }));
+  expect(sent).toEqual(['book an auto to Cubbon Park']);
+  expect(assistant.getStatus().log.filter(m => m.role === 'user')).toHaveLength(1);
+  expect((await s.runTool('press_element', { element_id: 'btn_book_ride' })).isError).toBe(true);
+
+  // After the refusal (the agent asked): a reply that isn't a yes allows nothing; a yes allows one press.
+  await act(async () => s.emit({ type: 'user-text', text: 'and make it quick', final: true }));
+  expect((await s.runTool('press_element', { element_id: 'btn_book_ride' })).isError).toBe(true);
+  await act(async () => s.emit({ type: 'user-text', text: 'please book it', final: true }));
+  let booked!: Awaited<ReturnType<RealtimeSession['runTool']>>;
+  await act(async () => {
+    booked = await s.runTool('press_element', { element_id: 'btn_book_ride' });
+  });
+  expect(booked.isError).toBe(false);
+  await act(async () => {
+    t.hangUp();
+    await run;
+  });
+  await act(async () => r.unmount());
+});
+
+test('confirm: without being asked first, a later message is not a yes', async () => {
+  const t = scriptedTransport();
+  const { r, assistant } = await mount({ greeting: 'Hi', realtime: t.transport, confirm });
+  let run!: Promise<void>;
+  await act(async () => {
+    run = assistant.start();
+  });
+  await act(async () => new Promise(res => setTimeout(res, 10)));
+  const s = t.session();
+  await act(async () => {
+    s.emit({ type: 'user-text', text: 'book an auto', final: true });
+    s.emit({ type: 'user-text', text: 'to Cubbon Park', final: true });
+  });
+  expect((await s.runTool('press_element', { element_id: 'btn_book_ride' })).isError).toBe(true);
+  await act(async () => {
+    t.hangUp();
+    await run;
+  });
+  await act(async () => r.unmount());
+});

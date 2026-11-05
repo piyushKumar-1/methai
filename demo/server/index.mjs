@@ -169,7 +169,16 @@ function relayDeepgram(req, socket, head) {
       upstream.close();
     };
     const forward = (to, data, isBinary) => to.readyState === WebSocket.OPEN && to.send(data, { binary: isBinary });
-    client.on('message', (data, isBinary) => (upstream.readyState === WebSocket.OPEN ? forward(upstream, data, isBinary) : pending.push([data, isBinary])));
+    client.on('message', (data, isBinary) => {
+      if (!isBinary) {
+        try {
+          const m = JSON.parse(data.toString());
+          if (m.type === 'Settings') console.log(`${ts()} deepgram Settings: prompt ${m.agent?.think?.prompt?.length ?? 0} chars, ${m.agent?.think?.functions?.length ?? 0} functions, think ${JSON.stringify(m.agent?.think?.provider)}`);
+          else if (m.type !== 'KeepAlive') console.log(`${ts()} deepgram ← ${data.toString().slice(0, 160)}`);
+        } catch {}
+      }
+      upstream.readyState === WebSocket.OPEN ? forward(upstream, data, isBinary) : pending.push([data, isBinary]);
+    });
     upstream.on('open', () => pending.splice(0).forEach(([data, isBinary]) => forward(upstream, data, isBinary)));
     upstream.on('message', (data, isBinary) => {
       if (!isBinary) {

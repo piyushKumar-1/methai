@@ -628,9 +628,12 @@ export class VoiceAssistant {
       this.trace({ type: 'context', text });
     };
 
+    // What the user last typed: some transports repeat it back as the user's words (not a new turn).
+    let lastTyped = '';
     /** A typed request: the same turn as a spoken one, sent as text. */
     const typed = (text: string) => {
       if (!controls.text || signal.aborted) return;
+      lastTyped = text;
       clear();
       this.set({ state: 'thinking', transcript: text });
       this.userSaid(text);
@@ -694,6 +697,10 @@ export class VoiceAssistant {
               if (!event.final) {
                 this.set({ state: 'listening', transcript: event.text });
                 void checkScreen();
+                break;
+              }
+              if (lastTyped && event.text.trim() === lastTyped.trim()) {
+                lastTyped = '';
                 break;
               }
               this.set({ state: 'thinking', transcript: event.text });
