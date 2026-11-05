@@ -123,13 +123,14 @@ export function AssistantOverlay({
             {thinking ? <Dots color={fg} /> : speaking ? <View style={[styles.stop, { backgroundColor: fg }]} /> : icon ?? <MicGlyph color={fg} />}
           </Pressable>
           {interruptions && state !== 'idle' && (
-            <StyleSwitch
-              value={interruptions.value}
-              onChange={interruptions.onChange}
-              accent={accent}
-              fontFamily={theme.fontFamily}
-              style={[{ top: size + 8 }, left ? { left: 4 } : { right: 4 }]}
-            />
+            // A wide, see-through frame anchored at the button's edge, so the switch sizes to its
+            // labels instead of being squeezed to the button's width.
+            <View
+              pointerEvents="box-none"
+              style={[styles.switchFrame, { top: size + 8 }, left ? { left: 4, alignItems: 'flex-start' } : { right: 4, alignItems: 'flex-end' }]}
+            >
+              <StyleSwitch value={interruptions.value} onChange={interruptions.onChange} accent={accent} fontFamily={theme.fontFamily} />
+            </View>
           )}
         </View>
         {typing ? (
@@ -175,13 +176,11 @@ function StyleSwitch({
   onChange,
   accent,
   fontFamily,
-  style,
 }: {
   value: ConversationStyle;
   onChange: (value: ConversationStyle) => void;
   accent: string;
   fontFamily?: string;
-  style: object;
 }) {
   const interrupt = value === 'interrupt';
   return (
@@ -192,11 +191,12 @@ function StyleSwitch({
       accessibilityState={{ checked: interrupt }}
       accessibilityHint={interrupt ? 'Switches to taking turns: it finishes before you talk' : 'Switches to interrupting: talk over it to stop it'}
       hitSlop={6}
-      style={[styles.switch, style]}
+      style={styles.switch}
     >
       {(['interrupt', 'turns'] as const).map(option => (
         <Text
           key={option}
+          numberOfLines={1}
           style={[styles.switchOption, { fontFamily }, value === option ? { backgroundColor: accent, color: '#fff' } : { color: '#555' }]}
         >
           {option === 'interrupt' ? 'Interrupt' : 'Take turns'}
@@ -314,8 +314,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
   },
   caption: { fontSize: 15, lineHeight: 21 },
+  switchFrame: { position: 'absolute', width: 320 },
   switch: {
-    position: 'absolute',
     flexDirection: 'row',
     padding: 2,
     borderRadius: 14,
