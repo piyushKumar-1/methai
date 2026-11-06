@@ -35,11 +35,19 @@ const UPLOAD_RATE = 16000; // what speech-to-text wants; a third smaller than 24
 /** Loudness (pcmLevel) that is always speech, and how far above the room's noise a chunk must be. */
 const MIN_SPEECH_LEVEL = 0.18;
 const ABOVE_NOISE = 1.8;
-const MAX_START_NOISE = 0.35;
+/** The room's noise is the quietest moment in this long. */
+const NOISE_WINDOW_MS = 2000;
+const MAX_NOISE = 0.35;
 /** Loud for this much in a row (chunks are ~100 ms) before it counts as the user talking. */
 const SPEECH_START_MS = 200;
 /** Audio kept from just before speech was detected, so the first syllable isn't clipped. */
 const PRE_ROLL_MS = 400;
+
+interface Recorded {
+  chunks: string[];
+  why: string;
+  levels: { noise: number; peak: number };
+}
 
 const value = <T>(v: T | (() => T)) => (typeof v === 'function' ? (v as () => T)() : v);
 
@@ -69,23 +77,35 @@ export function pcm16ToWav(samples: Float32Array, rate: number): Uint8Array {
 /**
  * Tells the user's speech from the room's noise, chunk by chunk, and says when their turn is over:
  * after `endSilenceMs` of quiet once they've spoken, after `noSpeechMs` if they never do, or at
- * `maxTurnMs`. The noise floor is learned while they're quiet, so a noisy street doesn't count as talking.
+ * `maxTurnMs`. The room's noise is the quietest moment of the last two seconds: the gaps between
+ * words keep it current while they talk, and a fan or a street that is always there isn't speech.
  */
 export function speechEndpointer(opts: { endSilenceMs: number; noSpeechMs: number; maxTurnMs: number }) {
-  let noise = 0;
+  const recent: { level: number; ms: number }[] = [];
+  let recentMs = 0;
   let elapsed = 0;
   let loudFor = 0;
   let quietFor = 0;
   let speaking = false;
+  let noise = 0;
+  let peak = 0;
   return {
     get speaking() {
       return speaking;
     },
+    /** The room's noise and the loudest moment so far (pcmLevel), for tracing. */
+    get levels() {
+      return { noise, peak };
+    },
     /** Feeds one chunk; returns why the turn is over, or null to keep listening. */
     push(level: number, ms: number): 'end of speech' | 'no speech' | 'too long' | null {
       elapsed += ms;
-      // The mic's first moment is the room before anyone talks (capped: they may already be talking).
-      if (noise === 0) noise = Math.min(level, MAX_START_NOISE);
+      peak = Math.max(peak, level);
+      recent.push({ level, ms });
+      recentMs += ms;
+      while (recentMs - recent[0].ms >= NOISE_WINDOW_MS) recentMs -= recent.shift()!.ms;
+      // Capped: someone who talks from the first moment has no quiet in the window yet.
+      noise = Math.min(MAX_NOISE, ...recent.map(r => r.level));
       const loud = level >= Math.max(MIN_SPEECH_LEVEL, noise * ABOVE_NOISE);
       if (loud) {
         loudFor += ms;
@@ -94,8 +114,6 @@ export function speechEndpointer(opts: { endSilenceMs: number; noSpeechMs: numbe
       } else {
         loudFor = 0;
         quietFor += ms;
-        // Follows the noise down quickly and up slowly, so speech doesn't raise it.
-        noise = level < noise ? noise * 0.7 + level * 0.3 : noise * 0.95 + level * 0.05;
       }
       if (speaking && quietFor >= opts.endSilenceMs) return 'end of speech';
       if (!speaking && elapsed >= opts.noSpeechMs) return 'no speech';
@@ -117,7 +135,7 @@ export function withHostedListening(voice: VoiceIO, opts: HostedListeningOptions
 
   /** Records one turn; resolves with its audio (empty when nothing was said or it was cut off). */
   const record = (signal: AbortSignal, onLevel?: (level: number) => void) =>
-    new Promise<{ chunks: string[]; why: string }>((resolve, reject) => {
+    new Promise<Recorded>((resolve, reject) => {
       const endpointer = speechEndpointer(endpointing);
       const chunks: string[] = [];
       let preRollMs = 0;
@@ -128,12 +146,12 @@ export function withHostedListening(voice: VoiceIO, opts: HostedListeningOptions
         signal.removeEventListener('abort', onAbort);
         onLevel?.(0);
         opts.audio.stopCapture().then(
-          () => resolve({ chunks: endpointer.speaking && !signal.aborted ? chunks : [], why }),
-          () => resolve({ chunks: endpointer.speaking && !signal.aborted ? chunks : [], why }),
+          () => resolve({ chunks: endpointer.speaking && !signal.aborted ? chunks : [], why, levels: endpointer.levels }),
+          () => resolve({ chunks: endpointer.speaking && !signal.aborted ? chunks : [], why, levels: endpointer.levels }),
         );
       };
       const onAbort = () => finish('aborted');
-      if (signal.aborted) return resolve({ chunks: [], why: 'aborted' });
+      if (signal.aborted) return resolve({ chunks: [], why: 'aborted', levels: { noise: 0, peak: 0 } });
       signal.addEventListener('abort', onAbort, { once: true });
       opts.audio
         .startCapture(chunk => {
@@ -181,7 +199,7 @@ export function withHostedListening(voice: VoiceIO, opts: HostedListeningOptions
   };
 
   const listen = async (signal: AbortSignal, onPartial?: (text: string) => void, onLevel?: (level: number) => void, options?: ListenOptions) => {
-    let recorded: { chunks: string[]; why: string };
+    let recorded: Recorded;
     try {
       recorded = await record(signal, onLevel);
     } catch (e) {
@@ -189,7 +207,8 @@ export function withHostedListening(voice: VoiceIO, opts: HostedListeningOptions
       opts.onError?.(e as Error);
       return voice.listen(signal, onPartial, onLevel, options);
     }
-    opts.log?.(`listen ended (${recorded.why})${recorded.chunks.length ? '' : ', nothing said'}`);
+    const { noise, peak } = recorded.levels;
+    opts.log?.(`listen ended (${recorded.why}, noise ${noise.toFixed(2)}, peak ${peak.toFixed(2)})${recorded.chunks.length ? '' : ', nothing said'}`);
     if (!recorded.chunks.length || signal.aborted) return '';
     try {
       const text = await transcribe(recorded.chunks, signal);

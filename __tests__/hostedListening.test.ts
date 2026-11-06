@@ -68,6 +68,23 @@ describe('speechEndpointer', () => {
     expect(e.speaking).toBe(true);
   });
 
+  it('hears someone who talks from the first moment', () => {
+    const e = speechEndpointer(opts);
+    for (let i = 0; i < 3; i++) e.push(0.7, 100);
+    expect(e.speaking).toBe(true);
+  });
+
+  it('keeps following the room while the user talks, and ends after their last word', () => {
+    const e = speechEndpointer(opts);
+    // A noisy room (0.3), words (0.75) with short gaps back to the room's level, then quiet.
+    for (let i = 0; i < 10; i++) e.push(0.3, 100);
+    const words = Array.from({ length: 40 }, (_, i) => (i % 5 === 4 ? 0.3 : 0.75));
+    expect(words.map(l => e.push(l, 100)).every(r => r === null)).toBe(true);
+    const after = Array.from({ length: 9 }, () => e.push(0.3, 100));
+    expect(after[8]).toBe('end of speech');
+    expect(e.levels).toEqual({ noise: 0.3, peak: 0.75 });
+  });
+
   it('stops a turn that runs too long', () => {
     const e = speechEndpointer({ ...opts, maxTurnMs: 1000 });
     const results = Array.from({ length: 10 }, () => e.push(0.7, 100));
