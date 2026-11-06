@@ -4,6 +4,7 @@ import type { AssistantConfig, VoiceIO } from './assistant';
 import type { MethaiConfig } from './config';
 import { deepgramAgentModel } from './deepgram';
 import { elevenLabsAgentModel } from './elevenlabs';
+import { withHostedListening } from './hostedListening';
 import { withHostedSpeech } from './hostedSpeech';
 import { withModelTimeout } from './modelWrappers';
 import { openAIChatModel } from './openai';
@@ -90,7 +91,7 @@ export function toAssistantConfig(config: MethaiConfig, runtime: AssistantRuntim
       if (!runtime.deviceVoice) throw new Error("methai: a 'device' voice needs runtime.deviceVoice");
       const { timeoutMs, ...modelOpts } = v.model;
       const model = openAIChatModel({ ...modelOpts, ...(runtime.log && { log: runtime.log }) });
-      const voice = v.speech
+      const speaking = v.speech
         ? withHostedSpeech(runtime.deviceVoice, {
             endpoint: v.speech.endpoint,
             model: v.speech.model,
@@ -101,6 +102,20 @@ export function toAssistantConfig(config: MethaiConfig, runtime: AssistantRuntim
             ...(runtime.log && { onError: e => runtime.log!(`hosted voice failed, using the phone's: ${e.message}`) }),
           })
         : runtime.deviceVoice;
+      const voice = v.listen
+        ? withHostedListening(speaking, {
+            endpoint: v.listen.endpoint,
+            model: v.listen.model,
+            ...(v.listen.language && { language: v.listen.language }),
+            ...(v.listen.endSilenceMs !== undefined && { endSilenceMs: v.listen.endSilenceMs }),
+            audio: needAudio(),
+            ...(runtime.fetchImpl && { fetchImpl: runtime.fetchImpl }),
+            ...(runtime.log && {
+              log: (m: string) => runtime.log!(`[listen] ${m}`),
+              onError: (e: Error) => runtime.log!(`hosted listening failed, using the phone's: ${e.message}`),
+            }),
+          })
+        : speaking;
       voicePart = { voice, model: timeoutMs ? withModelTimeout(model, timeoutMs) : model };
       break;
     }

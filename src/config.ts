@@ -32,10 +32,20 @@ export interface HostedSpeechConfig {
   language?: string;
 }
 
+/** Hosted speech-to-text for listening (your relay's /transcribe, e.g. to Sarvam), instead of the phone's recognizer. */
+export interface HostedListeningConfig {
+  endpoint: string;
+  model: string;
+  /** BCP-47, or 'unknown' / unset to detect it (mixed Hindi-English included). */
+  language?: string;
+  /** Quiet after speaking that ends the turn. Default 900 ms. */
+  endSilenceMs?: number;
+}
+
 /** How the assistant listens, thinks and talks. */
 export type VoiceConfig =
-  /** The phone's speech recognition, a chat model, and the phone's voice (or `speech`). */
-  | { type: 'device'; model: ChatModelConfig; speech?: HostedSpeechConfig }
+  /** The phone's speech recognition (or `listen`), a chat model, and the phone's voice (or `speech`). */
+  | { type: 'device'; model: ChatModelConfig; speech?: HostedSpeechConfig; listen?: HostedListeningConfig }
   /** Deepgram Voice Agent through `url` (a relay that adds the key). */
   | { type: 'deepgram'; url: string; language?: string; listen?: Record<string, unknown>; think?: Record<string, unknown>; speak?: Record<string, unknown> }
   /** An ElevenLabs agent: `url` returns { signed_url }; `captionsUrl` returns { url } for live captions. */
@@ -145,7 +155,9 @@ const chatModel = shape({
 });
 
 const voiceChecks: Record<string, Record<string, Check>> = {
-  device: { model: required(chatModel), speech: shape({ endpoint: required(is('string')), model: required(is('string')), voice: is('string'), language: is('string') }) },
+  device: { model: required(chatModel), speech: shape({ endpoint: required(is('string')), model: required(is('string')), voice: is('string'), language: is('string') }),
+    listen: shape({ endpoint: required(is('string')), model: required(is('string')), language: is('string'), endSilenceMs: is('number') }),
+  },
   deepgram: { url: required(is('string')), language: is('string'), listen: is('object'), think: is('object'), speak: is('object') },
   elevenlabs: { url: required(is('string')), captionsUrl: is('string'), voiceId: is('string'), language: is('string') },
   'openai-realtime': { url: required(is('string')), voice: is('string'), turnDetection: oneOf('semantic', 'server'), eagerness: oneOf('low', 'medium', 'high', 'auto') },

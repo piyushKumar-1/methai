@@ -201,6 +201,10 @@ const VOICE_FIELDS = {
     { path: 'voice.speech.model', label: 'Voice model', help: 'sarvam/bulbul:v3, elevenlabs/eleven-flash-v2.5…' },
     { path: 'voice.speech.voice', label: 'Voice', help: 'kavya, Jessica…' },
     { path: 'voice.speech.language', label: 'Voice language', help: "Empty: the app's language" },
+    { path: 'voice.listen.endpoint', label: 'Hosted listening endpoint', help: "Empty: the phone's recognizer. e.g. http://relay/transcribe (Sarvam)", wide: true },
+    { path: 'voice.listen.model', label: 'Listening model', help: 'saaras:v3, saarika:v2.5' },
+    { path: 'voice.listen.language', label: 'Listening language', help: 'Empty or unknown: detected (mixed Hindi-English too)' },
+    { path: 'voice.listen.endSilenceMs', label: 'Quiet that ends a turn (ms)', kind: 'number', placeholder: '900' },
   ],
   deepgram: [
     { path: 'voice.url', label: 'Relay URL', help: 'wss:// relay that adds the Deepgram key', wide: true },
@@ -228,7 +232,7 @@ function voiceTab() {
   const typeSelect = h('select', {
     onchange: e => { state.config.voice = { type: e.target.value }; changed(); render(); },
   }, ...Object.keys(VOICE_FIELDS).map(t => h('option', { value: t, selected: t === type }, {
-    device: "Phone's speech + chat model", deepgram: 'Deepgram voice agent', elevenlabs: 'ElevenLabs agent', 'openai-realtime': 'OpenAI Realtime',
+    device: "Chat model + phone or hosted speech", deepgram: 'Deepgram voice agent', elevenlabs: 'ElevenLabs agent', 'openai-realtime': 'OpenAI Realtime',
   }[t])));
   return [
     card('Assistant', [

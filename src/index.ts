@@ -25,6 +25,8 @@ export { deepgramAgentModel, deepgramListen, deepgramProtocol, deepgramSpeak, el
 export type { DeepgramAgentOptions, DeepgramAgentSettings, ElevenLabsVoiceOptions } from './deepgram';
 export { withHostedSpeech } from './hostedSpeech';
 export type { HostedSpeechOptions } from './hostedSpeech';
+export { pcm16ToWav, speechEndpointer, withHostedListening } from './hostedListening';
+export type { HostedListeningOptions } from './hostedListening';
 export type { ElevenLabsAgentOptions, ElevenLabsAgentSettings } from './elevenlabs';
 export { base64ToBytes, bytesToBase64, floatToPcm16Base64, pcm16Base64ToFloat, pcmLevel, resample } from './pcm';
 export { AgentGlow } from './AgentGlow';
@@ -44,7 +46,7 @@ export type * from './types';
 export { nextScrollOffset } from './scroll';
 export type { ScrollDirection } from './scroll';
 export { METHAI_CONFIG_VERSION, validateMethaiConfig } from './config';
-export type { AssistantBehaviourConfig, ChatModelConfig, ConfigValidation, ConfirmConfig, HostedSpeechConfig, MethaiConfig, VoiceConfig } from './config';
+export type { AssistantBehaviourConfig, ChatModelConfig, ConfigValidation, ConfirmConfig, HostedListeningConfig, HostedSpeechConfig, MethaiConfig, VoiceConfig } from './config';
 export { memoryStorage, Methai, methai } from './methai';
 export type { ConfigSource, ConfigStorage, MethaiConfigState, MethaiInitOptions } from './methai';
 export { toAssistantConfig } from './configAssistant';

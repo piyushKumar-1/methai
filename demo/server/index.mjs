@@ -8,7 +8,7 @@
 //   GET  /elevenlabs/scribe-url -> a one-off URL for live captions (Scribe realtime speech-to-text)
 //   WS   /deepgram/agent -> relays to Deepgram's Voice Agent (audio frames both ways), adding the key
 // Keys: GRID_API_KEY or ~/.config/grid/key; OPENROUTER_API_KEY or ~/.config/openrouter/key;
-// DEEPGRAM_API_KEY or ~/.config/deepgram/key; SARVAM_API_KEY or ~/.config/sarvam/key;
+// DEEPGRAM_API_KEY or ~/.config/deepgram/key; SARVAM_API_KEY or ~/.config/sarvam/key (/speech, /transcribe);
 // ELEVENLABS_API_KEY or ~/.config/elevenlabs/key, with the agent from scripts/elevenlabs-agent.mjs
 // (ELEVENLABS_AGENT_ID or ~/.config/elevenlabs/agent_id).   Run: npm run server
 import { readFileSync } from 'node:fs';
@@ -40,6 +40,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/elevenlabs/signed-url') return elevenLabsSignedUrl(res);
   if (req.method === 'GET' && req.url === '/elevenlabs/scribe-url') return elevenLabsScribeUrl(res);
   if (req.method === 'POST' && req.url === '/speech') return speech(req, res);
+  if (req.method === 'POST' && req.url === '/transcribe') return transcribe(req, res);
   if (req.method === 'POST' && req.url === '/openrouter/chat') return chat(req, res, 'https://openrouter.ai/api/v1', OPENROUTER_KEY, 'openrouter');
   if (req.method === 'POST' && req.url === '/chat') return chat(req, res, BASE, KEY, 'chat');
   res.writeHead(404).end();
@@ -134,6 +135,38 @@ async function sarvamSpeech(body, res, t0) {
   const { rate, pcm } = wavPcm(Buffer.from(data.audios[0], 'base64'));
   res.writeHead(200, { 'Content-Type': `audio/pcm;rate=${rate};channels=1` }).end(pcm);
   console.log(`${ts()} speech ${body.model} ${body.voice ?? ''} ${language} 200 ${Date.now() - t0}ms, ${Math.round(pcm.length / 1024)} KB  ${JSON.stringify(body.input?.slice(0, 60))}`);
+}
+
+// Listening (withHostedListening): { model, audio: base64 WAV, language? } → Sarvam speech-to-text
+// (saaras / saarika: Indian languages, Indian English and Hindi-English mixed) → { text, language }.
+async function transcribe(req, res) {
+  if (!SARVAM_KEY) return json(res, 500, { error: { message: 'No Sarvam key' } });
+  let raw = '';
+  for await (const chunk of req) raw += chunk;
+  const t0 = Date.now();
+  try {
+    const body = JSON.parse(raw);
+    const wav = Buffer.from(String(body.audio ?? ''), 'base64');
+    const form = new FormData();
+    form.append('file', new Blob([wav], { type: 'audio/wav' }), 'speech.wav');
+    form.append('model', String(body.model || 'saaras:v3').replace(/^sarvam\//, ''));
+    // Sarvam wants a region ('kn' → 'kn-IN'); 'unknown' detects the language.
+    const language = String(body.language || 'unknown');
+    form.append('language_code', language === 'unknown' || language.includes('-') ? language : `${language}-IN`);
+    const upstream = await fetch('https://api.sarvam.ai/speech-to-text', { method: 'POST', headers: { 'api-subscription-key': SARVAM_KEY }, body: form });
+    const data = await upstream.json().catch(() => ({}));
+    const { rate, pcm } = wavPcm(wav);
+    const seconds = pcm.length / 2 / rate;
+    if (!upstream.ok) {
+      console.log(`${ts()} transcribe ${body.model} ${upstream.status} ${JSON.stringify(data).slice(0, 200)}`);
+      return json(res, upstream.status, { error: { message: data.error?.message ?? `Sarvam: HTTP ${upstream.status}` } });
+    }
+    console.log(`${ts()} transcribe ${body.model} ${language}→${data.language_code} 200 ${Date.now() - t0}ms, ${seconds.toFixed(1)}s audio  ${JSON.stringify(data.transcript)}`);
+    json(res, 200, { text: data.transcript ?? '', language: data.language_code });
+  } catch (e) {
+    console.log(`${ts()} transcribe error ${e.message}`);
+    json(res, 502, { error: { message: e.message } });
+  }
 }
 
 // Streams the audio through as it arrives, so the app can start playing before it's all made.
